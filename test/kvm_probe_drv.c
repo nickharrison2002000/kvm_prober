@@ -15,6 +15,7 @@
 #include <linux/kvm_para.h>
 #include <asm/text-patching.h>
 #include <linux/uaccess.h>  // For copy_from_kernel_nofault
+#include <linux/kallsyms.h>
 
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
@@ -549,7 +550,6 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 return -EINVAL;
             }
 
-            // Limit patch size
             if (patch_req.size > PAGE_SIZE) {
                 printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Size too large\n", DRIVER_NAME);
                 return -EINVAL;
@@ -567,14 +567,13 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 return -EFAULT;
             }
 
-            // SAFE: Use kernel text patching API
-            text_poke((void *)patch_req.va, new_instructions, patch_req.size);
+            // Use the function pointer to call text_poke
+            text_poke_ptr((void *)patch_req.va, new_instructions, patch_req.size);
 
             kfree(new_instructions);
             printk(KERN_DEBUG "%s: Patched %zu instructions at VA 0x%lx\n",
                    DRIVER_NAME, patch_req.size, patch_req.va);
-            
-            // ADDED: Trigger hypercall and flags extraction
+
             force_hypercall();
             extract_kvmctf_flags();
             return 0;
@@ -591,30 +590,42 @@ static struct file_operations fops = {
     .unlocked_ioctl = driver_ioctl,
 };
 
+static void (*text_poke_ptr)(void *addr, const void *opcode, size_t len);
+
 static int __init mod_init(void) {
     printk(KERN_INFO "%s: Initializing Enhanced KVM Probe Module.\n", DRIVER_NAME);
+
+    // Look up text_poke symbol
+    text_poke_ptr = (void *)kallsyms_lookup_name("text_poke");
+    if (!text_poke_ptr) {
+        printk(KERN_ERR "Failed to find text_poke symbol\n");
+        return -ENOENT;
+    }
+
     major_num = register_chrdev(0, DEVICE_FILE_NAME, &fops);
     if (major_num < 0) {
-        printk(KERN_ERR "%s: register_chrdev failed: %d\n", DRIVER_NAME, major_num);
+        printk(KERN_ERR "%s: Failed to register char device\n", DRIVER_NAME);
         return major_num;
     }
     driver_class = class_create(THIS_MODULE, DRIVER_NAME);
     if (IS_ERR(driver_class)) {
         unregister_chrdev(major_num, DEVICE_FILE_NAME);
-        printk(KERN_ERR "%s: class_create failed\n", DRIVER_NAME);
+        printk(KERN_ERR "%s: Failed to create class\n", DRIVER_NAME);
         return PTR_ERR(driver_class);
     }
     driver_device = device_create(driver_class, NULL, MKDEV(major_num, 0), NULL, DEVICE_FILE_NAME);
     if (IS_ERR(driver_device)) {
         class_destroy(driver_class);
         unregister_chrdev(major_num, DEVICE_FILE_NAME);
-        printk(KERN_ERR "%s: device_create failed\n", DRIVER_NAME);
+        printk(KERN_ERR "%s: Failed to create device\n", DRIVER_NAME);
         return PTR_ERR(driver_device);
     }
+
     g_vq_virt_addr = NULL;
     g_vq_phys_addr = 0;
     g_vq_pfn = 0;
     skeletonkey_rce_probe();
+
     printk(KERN_INFO "%s: Module loaded. Device /dev/%s created with major %d.\n", DRIVER_NAME, DEVICE_FILE_NAME, major_num);
     return 0;
 }
