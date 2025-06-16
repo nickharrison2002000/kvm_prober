@@ -13,6 +13,10 @@
 #include <linux/types.h>
 #include <linux/byteorder/generic.h>
 #include <linux/kvm_para.h>
+#include <linux/page-flags.h>
+#include <linux/pagemap.h>
+#include <linux/kdev_t.h>
+#include <linux/err.h>
 
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
@@ -66,15 +70,9 @@ struct kvm_kernel_mem_write {
     unsigned char __user *user_buf;
 };
 
-// === NEW: VA scan/write ===
+// VA scan structure and ioctl code
 #define IOCTL_SCAN_VA           0x1010
-#define IOCTL_WRITE_VA          0x1011
 struct va_scan_data {
-    unsigned long va;
-    unsigned long size;
-    unsigned char __user *user_buffer;
-};
-struct va_write_data {
     unsigned long va;
     unsigned long size;
     unsigned char __user *user_buffer;
@@ -144,6 +142,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             }
             force_hypercall();
             break;
+
         case IOCTL_WRITE_PORT:
             if (copy_from_user(&p_io_data_kernel, (struct port_io_data __user *)arg, sizeof(p_io_data_kernel))) {
                 printk(KERN_ERR "%s: WRITE_PORT: copy_from_user failed. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
@@ -164,6 +163,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                    DRIVER_NAME, p_io_data_kernel.port, ktime_get_ns());
             force_hypercall();
             break;
+
         case IOCTL_READ_MMIO: {
             struct mmio_data data;
             if (copy_from_user(&data, (void __user *)arg, sizeof(data))) {
@@ -194,6 +194,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             force_hypercall();
             return 0;
         }
+
         case IOCTL_WRITE_MMIO: {
             if (copy_from_user(&m_io_data_kernel, (struct mmio_data __user *)arg, sizeof(m_io_data_kernel))) {
                 printk(KERN_ERR "%s: IOCTL_WRITE_MMIO: copy_from_user failed\n", DRIVER_NAME);
@@ -249,6 +250,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             force_hypercall();
             return 0;
         }
+
         case IOCTL_READ_KERNEL_MEM: {
             struct kvm_kernel_mem_read req;
             if (copy_from_user(&req, (struct kvm_kernel_mem_read __user *)arg, sizeof(req))) {
@@ -267,6 +269,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             force_hypercall();
             break;
         }
+
         case IOCTL_WRITE_KERNEL_MEM: {
             struct kvm_kernel_mem_write req;
             if (copy_from_user(&req, (struct kvm_kernel_mem_write __user *)arg, sizeof(req))) {
@@ -289,6 +292,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             force_hypercall();
             break;
         }
+
         case IOCTL_ALLOC_VQ_PAGE: {
             struct page *vq_page_ptr;
             unsigned long pfn_to_user;
@@ -322,6 +326,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             force_hypercall();
             break;
         }
+
         case IOCTL_FREE_VQ_PAGE: {
             printk(KERN_INFO "%s: IOCTL_FREE_VQ_PAGE. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
             if (g_vq_virt_addr) {
@@ -337,6 +342,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             force_hypercall();
             break;
         }
+
         case IOCTL_WRITE_VQ_DESC: {
             struct vq_desc_user_data user_desc_data_kernel;
             struct vring_desc_kernel *kernel_desc_ptr_local;
@@ -366,6 +372,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             force_hypercall();
             break;
         }
+
         case IOCTL_TRIGGER_HYPERCALL: {
             printk(KERN_INFO "%s: DIRECT HYPERCALL TRIGGER. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
             long ret = force_hypercall();
@@ -376,7 +383,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             break;
         }
 
-        // === PATCH: VA SCAN/WRITE PRIMITIVE ===
+        // === PATCH: VA SCAN PRIMITIVE ===
         case IOCTL_SCAN_VA: {
             struct va_scan_data va_req;
             if (copy_from_user(&va_req, (struct va_scan_data __user *)arg, sizeof(va_req))) {
@@ -387,49 +394,29 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: Null arg(s)\n", DRIVER_NAME);
                 return -EINVAL;
             }
-            // No arbitrary limit on va_req.size!
+            if (va_req.size > 4096) {
+                printk(KERN_ERR "%s: IOCTL_SCAN_VA: Size too big (%lu)\n", DRIVER_NAME, va_req.size);
+                return -EINVAL;
+            }
+
             void *src = (void *)va_req.va;
             unsigned char *tmp = kmalloc(va_req.size, GFP_KERNEL);
             if (!tmp) {
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: kmalloc failed\n", DRIVER_NAME);
                 return -ENOMEM;
             }
+
             memcpy(tmp, src, va_req.size);
+
             if (copy_to_user(va_req.user_buffer, tmp, va_req.size)) {
                 kfree(tmp);
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: copy_to_user failed\n", DRIVER_NAME);
                 return -EFAULT;
             }
             kfree(tmp);
+
             printk(KERN_CRIT "%s: IOCTL_SCAN_VA: dumped 0x%lx bytes from VA 0x%lx\n",
                    DRIVER_NAME, va_req.size, va_req.va);
-            force_hypercall();
-            return 0;
-        }
-        case IOCTL_WRITE_VA: {
-            struct va_write_data wa_req;
-            if (copy_from_user(&wa_req, (struct va_write_data __user *)arg, sizeof(wa_req))) {
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: copy_from_user failed\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-            if (!wa_req.va || !wa_req.size || !wa_req.user_buffer) {
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: Null arg(s)\n", DRIVER_NAME);
-                return -EINVAL;
-            }
-            unsigned char *tmp = kmalloc(wa_req.size, GFP_KERNEL);
-            if (!tmp) {
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: kmalloc failed\n", DRIVER_NAME);
-                return -ENOMEM;
-            }
-            if (copy_from_user(tmp, wa_req.user_buffer, wa_req.size)) {
-                kfree(tmp);
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: copy_from_user failed (user buf)\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-            memcpy((void *)wa_req.va, tmp, wa_req.size);
-            kfree(tmp);
-            printk(KERN_CRIT "%s: IOCTL_WRITE_VA: wrote 0x%lx bytes to VA 0x%lx\n",
-                   DRIVER_NAME, wa_req.size, wa_req.va);
             force_hypercall();
             return 0;
         }
