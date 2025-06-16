@@ -502,3 +502,7 @@ static void __exit mod_exit(void) {
 
 module_init(mod_init);
 module_exit(mod_exit);
+MODULE_VERSION("1.0");
+MODULE_INFO(vermagic, VERMAGIC_STRING);
+MODULE_INFO(name, kvm_probe_drv);
+MODULE_INFO(srcversion, "1.0.0");
