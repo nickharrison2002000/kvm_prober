@@ -46,6 +46,8 @@ struct kvm_kernel_mem_write {
 // ---- PATCH: VA SCAN/WRITE ----
 #define IOCTL_SCAN_VA   0x1010
 #define IOCTL_WRITE_VA  0x1011
+#define IOCTL_SCAN_INSTRUCTIONS 0x1012  // Changed from 0x1010
+#define IOCTL_PATCH_INSTRUCTIONS 0x1013 // Changed from 0x1011
 struct va_scan_data {
     unsigned long va;
     unsigned long size;
@@ -69,6 +71,21 @@ struct va_write_data {
 #define IOCTL_READ_KERNEL_MEM   0x1009
 #define IOCTL_WRITE_KERNEL_MEM  0x100A
 
+#define IOCTL_SCAN_INSTRUCTIONS         0x1010
+#define IOCTL_PATCH_INSTRUCTIONS        0x1011
+
+struct instruction_scan_data {
+    unsigned long va;
+    size_t size;
+    unsigned char *user_buffer;
+};
+
+struct instruction_patch_data {
+    unsigned long va;
+    size_t size;
+    unsigned char *user_buffer;
+};
+
 void print_usage(char *prog_name) {
     fprintf(stderr, "Usage: %s <command> [args...]\n", prog_name);
     fprintf(stderr, "Commands:\n");
@@ -88,6 +105,8 @@ void print_usage(char *prog_name) {
     fprintf(stderr, "  scanmmio <start_addr_hex> <end_addr_hex> <step_bytes>\n");
     fprintf(stderr, "  scanva <va_hex> <num_bytes>\n");
     fprintf(stderr, "  writeva <va_hex> <hex_string_to_write>\n");
+    fprintf(stderr, "  scaninstr <va_hex> <num_bytes>\n");
+    fprintf(stderr, "  patchinstr <va_hex> <hex_string_to_write>\n");
 }
 
 unsigned char *hex_string_to_bytes(const char *hex_str, unsigned long *num_bytes) {
@@ -412,7 +431,55 @@ int main(int argc, char *argv[]) {
             printf("Wrote %lu bytes to VA 0x%lx.\n", req.size, req.va);
         free(req.user_buffer);
 
-    // ---- END PATCH ----
+    } else if (strcmp(cmd, "scaninstr") == 0) {
+        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        struct instruction_scan_data scan = {0};
+        unsigned long va = strtoul(argv[2], NULL, 16);
+        size_t size = (size_t)strtoul(argv[3], NULL, 10); // Cast to size_t
+        unsigned char *buffer = malloc(size);
+        if (!buffer) { perror("malloc"); close(fd); return 1; }
+        scan.va = va;
+        scan.size = size;
+        scan.user_buffer = buffer;
+        if (ioctl(fd, IOCTL_SCAN_INSTRUCTIONS, &scan) < 0) {
+            perror("ioctl IOCTL_SCAN_INSTRUCTIONS failed");
+        } else {
+            printf("Instructions at 0x%lx:\n", va);
+            for (size_t i = 0; i < size; ++i) {
+                printf("%02X", buffer[i]);
+                if ((i+1) % 16 == 0) printf(" ");
+            }
+            printf("\n\n[ASCII]:\n");
+            for (size_t i = 0; i < size; ++i) {
+                unsigned char c = buffer[i];
+                printf("%c", (c >= 32 && c <= 126) ? c : '.');
+                if ((i+1) % 16 == 0) printf(" ");
+            }
+            printf("\n");
+        }
+        free(buffer);
+
+    } else if (strcmp(cmd, "patchinstr") == 0) {
+        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        struct instruction_patch_data patch = {0};
+        unsigned long va = strtoul(argv[2], NULL, 16);
+        size_t nbytes = 0; // FIXED: Declare nbytes
+        unsigned char *new_code = hex_string_to_bytes(argv[3], &nbytes);
+        if (!new_code || nbytes == 0) {
+            fprintf(stderr, "Failed to parse hex string for patchinstr\n");
+            if (new_code) free(new_code);
+            close(fd);
+            return 1;
+        }
+        patch.va = va;
+        patch.size = nbytes;
+        patch.user_buffer = new_code;
+        if (ioctl(fd, IOCTL_PATCH_INSTRUCTIONS, &patch) < 0) {
+            perror("ioctl IOCTL_PATCH_INSTRUCTIONS failed");
+        } else {
+            printf("Patched %lu bytes at VA 0x%lx.\n", nbytes, va);
+        }
+        if (new_code) free(new_code);
 
     } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);

