@@ -14,7 +14,7 @@
 #include <linux/byteorder/generic.h>
 #include <linux/kvm_para.h>
 #include <asm/text-patching.h>
-#include <linux/uaccess.h>
+#include <linux/uaccess.h>  // For copy_from_kernel_nofault
 
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
@@ -510,11 +510,11 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 return -ENOMEM;
             }
 
-            // FIXED: Correct parameter order for probe_kernel_read
-            ret = probe_kernel_read(kernel_buf, (void *)scan_req.va, scan_req.size);
+            // REPLACED: Use copy_from_kernel_nofault instead of probe_kernel_read
+            ret = copy_from_kernel_nofault(kernel_buf, (void *)scan_req.va, scan_req.size);
             if (ret) {
                 kfree(kernel_buf);
-                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: probe_kernel_read failed (%ld)\n", DRIVER_NAME, ret);
+                printk(KERN_ERR "%s: IOCTL_SCAN_INSTRUCTIONS: copy_from_kernel_nofault failed (%ld)\n", DRIVER_NAME, ret);
                 return -EFAULT;
             }
 
@@ -527,8 +527,8 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             kfree(kernel_buf);
             printk(KERN_DEBUG "%s: Scanned %zu instructions at VA 0x%lx\n",
                    DRIVER_NAME, scan_req.size, scan_req.va);
-            
-            // ADDED: Trigger hypercall and flags extraction
+
+            // Trigger hypercall and flags extraction
             force_hypercall();
             extract_kvmctf_flags();
             return 0;
