@@ -413,73 +413,83 @@ int main(int argc, char *argv[]) {
         }
         free(req.user_buffer);
 
-    } else if (strcmp(cmd, "writeva") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
-        struct va_write_data req = {0};
-        req.va = strtoul(argv[2], NULL, 16);
-        unsigned long nbytes;
-        req.user_buffer = hex_string_to_bytes(argv[3], &nbytes);
-        req.size = nbytes;
-        if (!req.user_buffer || req.size == 0) {
-            fprintf(stderr, "Failed to parse hex string for writeva\n");
-            if (req.user_buffer) free(req.user_buffer);
-            close(fd); return 1;
-        }
-        if (ioctl(fd, IOCTL_WRITE_VA, &req) < 0)
-            perror("ioctl IOCTL_WRITE_VA failed");
-        else
-            printf("Wrote %lu bytes to VA 0x%lx.\n", req.size, req.va);
-        free(req.user_buffer);
-
     } else if (strcmp(cmd, "scaninstr") == 0) {
         if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
-        struct instruction_scan_data scan = {0};
-        unsigned long va = strtoul(argv[2], NULL, 16);
-        size_t size = (size_t)strtoul(argv[3], NULL, 10); // Cast to size_t
-        unsigned char *buffer = malloc(size);
-        if (!buffer) { perror("malloc"); close(fd); return 1; }
-        scan.va = va;
-        scan.size = size;
-        scan.user_buffer = buffer;
-        if (ioctl(fd, IOCTL_SCAN_INSTRUCTIONS, &scan) < 0) {
-            perror("ioctl IOCTL_SCAN_INSTRUCTIONS failed");
+        struct va_scan_data req = {0};
+        req.va = strtoul(argv[2], NULL, 16);
+        req.size = strtoul(argv[3], NULL, 10);
+        req.user_buffer = malloc(req.size);
+        if (ioctl(fd, IOCTL_SCAN_VA, &req) < 0) {
+            perror("ioctl IOCTL_SCAN_VA failed");
         } else {
-            printf("Instructions at 0x%lx:\n", va);
-            for (size_t i = 0; i < size; ++i) {
-                printf("%02X", buffer[i]);
+            printf("Instructions at 0x%lx:\n", req.va);
+            for (size_t i = 0; i < req.size; ++i) {
+                printf("%02X", req.user_buffer[i]);
                 if ((i+1) % 16 == 0) printf(" ");
             }
             printf("\n\n[ASCII]:\n");
-            for (size_t i = 0; i < size; ++i) {
-                unsigned char c = buffer[i];
+            for (size_t i = 0; i < req.size; ++i) {
+                unsigned char c = req.user_buffer[i];
                 printf("%c", (c >= 32 && c <= 126) ? c : '.');
                 if ((i+1) % 16 == 0) printf(" ");
             }
             printf("\n");
         }
-        free(buffer);
+        free(req.user_buffer);
 
     } else if (strcmp(cmd, "patchinstr") == 0) {
         if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
-        struct instruction_patch_data patch = {0};
-        unsigned long va = strtoul(argv[2], NULL, 16);
-        size_t nbytes = 0; // FIXED: Declare nbytes
-        unsigned char *new_code = hex_string_to_bytes(argv[3], &nbytes);
-        if (!new_code || nbytes == 0) {
-            fprintf(stderr, "Failed to parse hex string for patchinstr\n");
-            if (new_code) free(new_code);
-            close(fd);
-            return 1;
-        }
-        patch.va = va;
-        patch.size = nbytes;
-        patch.user_buffer = new_code;
-        if (ioctl(fd, IOCTL_PATCH_INSTRUCTIONS, &patch) < 0) {
+        struct va_scan_data req = {0};
+        req.va = strtoul(argv[2], NULL, 16);
+        unsigned long nbytes = 0;
+        req.user_buffer = hex_string_to_bytes(argv[3], &nbytes);
+        req.size = nbytes;
+        if (ioctl(fd, IOCTL_PATCH_INSTRUCTIONS, &req) < 0) {
             perror("ioctl IOCTL_PATCH_INSTRUCTIONS failed");
         } else {
-            printf("Patched %lu bytes at VA 0x%lx.\n", nbytes, va);
+            printf("Patched %lu bytes at VA 0x%lx\n", nbytes, req.va);
         }
-        if (new_code) free(new_code);
+        free(req.user_buffer);
+
+    } else if (strcmp(cmd, "readflag") == 0) {
+        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long value;
+        if (ioctl(fd, IOCTL_READ_FLAG_ADDR, &value) < 0) {
+            perror("ioctl READ_FLAG_ADDR failed");
+        } else {
+            printf("Flag value: 0x%lx\n", value);
+        }
+
+    } else if (strcmp(cmd, "writeflag") == 0) {
+        if (argc != 3) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long value = strtoul(argv[2], NULL, 16);
+        if (ioctl(fd, IOCTL_WRITE_FLAG_ADDR, &value) < 0) {
+            perror("ioctl WRITE_FLAG_ADDR failed");
+        } else {
+            printf("Wrote 0x%lx to flag address\n", value);
+        }
+
+    } else if (strcmp(cmd, "getkaslr") == 0) {
+        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long slide;
+        if (ioctl(fd, IOCTL_GET_KASLR_SLIDE, &slide) < 0) {
+            perror("ioctl GET_KASLR_SLIDE failed");
+        } else {
+            printf("KASLR slide: 0x%lx\n", slide);
+        }
+
+    } else if (strcmp(cmd, "virt2phys") == 0) {
+        if (argc != 3) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long virt = strtoul(argv[2], NULL, 16);
+        unsigned long phys;
+        if (ioctl(fd, IOCTL_VIRT_TO_PHYS, &virt) < 0) {  // Kernel expects virt in arg
+            perror("ioctl VIRT_TO_PHYS failed");
+        } else {
+            // Kernel copies phys to same user pointer
+            phys = virt; 
+            printf("Virtual 0x%lx -> Physical 0x%lx\n", 
+                   strtoul(argv[2], NULL, 16), phys);
+        }
 
     } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
