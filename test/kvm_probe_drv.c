@@ -128,7 +128,7 @@ static const struct file_operations fops = {
     .unlocked_ioctl = driver_ioctl,
 };
 
-static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
+static long driver_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
     struct port_io_data p_io_data_kernel;
     struct mmio_data m_io_data_kernel;
     void __iomem *mapped_addr = NULL;
@@ -318,12 +318,16 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 kfree(tmp_buf);
                 return -EFAULT;
             }
-            ssize_t bytes_written = kernel_write((void *)req.kernel_addr, tmp_buf, req.length, 0);
+            mm_segment_t old_fs = get_fs();
+            set_fs(KERNEL_DS);
+            ssize_t bytes_written = kernel_write((struct file *)req.kernel_addr, tmp_buf, req.length, 0);
+            set_fs(old_fs);
             if (bytes_written != req.length) {
                 kfree(tmp_buf);
                 printk(KERN_ERR "%s: WRITE_KERNEL_MEM: kernel_write failed for 0x%lx (expected %lu, got %zd)\n",
                        DRIVER_NAME, req.kernel_addr, req.length, bytes_written);
                 return -EFAULT;
+            }
             }
             kfree(tmp_buf);
             printk(KERN_CRIT "%s: WRITE_KERNEL_MEM: wrote %lu bytes to 0x%lx\n", DRIVER_NAME, req.length, req.kernel_addr);
@@ -486,11 +490,16 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
                 return -EFAULT;
             }
-            if (copy_to_kernel_nofault((void *)patch_req.va, tmp, patch_req.size)) {
-                kfree(tmp);
-                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_to_kernel_nofault failed\n", DRIVER_NAME);
-                return -EFAULT;
-            }
+            #if defined(probe_kernel_write)
+                if (probe_kernel_write((void *)patch_req.va, tmp, patch_req.size)) {
+                    kfree(tmp);
+                    printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: probe_kernel_write failed\n", DRIVER_NAME);
+                    return -EFAULT;
+                }
+            #else
+                printk(KERN_ERR "%s: probe_kernel_write not available on this kernel\n", DRIVER_NAME);
+                // handle error or return -ENOSYS;
+            #endif
             kfree(tmp);
             force_hypercall();
             return 0;
