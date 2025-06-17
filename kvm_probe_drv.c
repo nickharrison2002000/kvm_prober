@@ -443,10 +443,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: Null arg(s)\n", DRIVER_NAME);
                 return -EINVAL;
             }
-            if (va_req.size > 4096) {
-                printk(KERN_ERR "%s: IOCTL_SCAN_VA: Size too big (%lu)\n", DRIVER_NAME, va_req.size);
-                return -EINVAL;
-            }
+            // Removed size limit to allow larger reads
             unsigned char *tmp = kmalloc(va_req.size, GFP_KERNEL);
             if (!tmp) {
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: kmalloc failed\n", DRIVER_NAME);
@@ -464,7 +461,6 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 return -EFAULT;
             }
             kfree(tmp);
-
             printk(KERN_CRIT "%s: IOCTL_SCAN_VA: dumped 0x%lx bytes from VA 0x%lx\n",
                    DRIVER_NAME, va_req.size, va_req.va);
             force_hypercall();

@@ -123,6 +123,20 @@ void exploit_delay(int nanoseconds) {
     nanosleep(&req, NULL);
 }
 
+// Helper to get symbol address from vmlinux
+unsigned long get_symbol_address(const char *symbol_name) {
+    char command[256];
+    snprintf(command, sizeof(command),
+             "nm /tmp/vmlinux | grep ' T %s$' | awk '{print $1}'", symbol_name);
+    FILE *fp = popen(command, "r");
+    if (!fp) return 0;
+
+    unsigned long addr = 0;
+    fscanf(fp, "%lx", &addr);
+    pclose(fp);
+    return addr;
+}
+
 int main(int argc, char *argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);
@@ -332,16 +346,69 @@ int main(int argc, char *argv[]) {
         exploit_delay(delay_ns);
         printf("Delayed for %d nanoseconds.\n", delay_ns);
 
-    } else if (strcmp(cmd, "scanmmio") == 0) {
-        if (argc != 5) {
-            print_usage(argv[0]);
+    } else if (strcmp(cmd, "writeva") == 0) {
+        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
+        struct va_scan_data req = {0};
+        req.va = strtoul(argv[2], NULL, 16);
+        unsigned long nbytes = 0;
+        req.user_buffer = hex_string_to_bytes(argv[3], &nbytes);
+        req.size = nbytes;
+        if (!req.user_buffer || req.size == 0) {
+            fprintf(stderr, "Failed to parse hex string for writeva\n");
+            if (req.user_buffer) free(req.user_buffer);
             close(fd);
             return 1;
         }
+        if (ioctl(fd, IOCTL_PATCH_INSTRUCTIONS, &req) < 0) {
+            perror("ioctl IOCTL_PATCH_INSTRUCTIONS failed");
+        } else {
+            printf("Wrote %lu bytes to VA 0x%lx\n", nbytes, req.va);
+        }
+        free(req.user_buffer);
+
+    } else if (strcmp(cmd, "scanva") == 0) {
+        if (argc != 5) { print_usage(argv[0]); close(fd); return 1; }
         unsigned long start = strtoul(argv[2], NULL, 16);
         unsigned long end = strtoul(argv[3], NULL, 16);
         unsigned long step = strtoul(argv[4], NULL, 10);
-        struct mmio_data data = {0};
+        if (step == 0 || step > 4096) {
+            fprintf(stderr, "Invalid step size (1-4096 bytes)\n");
+            close(fd);
+            return 1;
+        }
+        unsigned char *buf = malloc(step);
+        if (!buf) {
+            perror("malloc for scanva buffer");
+            close(fd);
+            return 1;
+        }
+        for (unsigned long addr = start; addr < end; addr += step) {
+            struct va_scan_data req = {0};
+            req.va = addr;
+            req.size = step;
+            req.user_buffer = buf;
+            if (ioctl(fd, IOCTL_SCAN_VA, &req) < 0) {
+                printf("0x%lX: ERROR\n", addr);
+            } else {
+                printf("0x%lX:", addr);
+                for (unsigned long i = 0; i < step; ++i) {
+                    printf("%02X", buf[i]);
+                }
+                printf("\n");
+            }
+        }
+        free(buf);
+
+    } else if (strcmp(cmd, "scanmmio") == 0) {
+        if (argc != 5) { print_usage(argv[0]); close(fd); return 1; }
+        unsigned long start = strtoul(argv[2], NULL, 16);
+        unsigned long end = strtoul(argv[3], NULL, 16);
+        unsigned long step = strtoul(argv[4], NULL, 10);
+        if (step == 0 || step > 4096) {
+            fprintf(stderr, "Invalid step size (1-4096 bytes)\n");
+            close(fd);
+            return 1;
+        }
         unsigned char *buf = malloc(step);
         if (!buf) {
             perror("malloc for scanmmio buffer");
@@ -349,54 +416,21 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         for (unsigned long addr = start; addr < end; addr += step) {
-            memset(buf, 0, step);
+            struct mmio_data data = {0};
             data.phys_addr = addr;
             data.size = step;
             data.user_buffer = buf;
             if (ioctl(fd, IOCTL_READ_MMIO, &data) < 0) {
-                printf("MMIO 0x%lX: <read error>\n", addr);
+                printf("0x%lX: ERROR\n", addr);
             } else {
-                printf("MMIO 0x%lX: ", addr);
-                for (unsigned long i = 0; i < step; ++i)
+                printf("0x%lX:", addr);
+                for (unsigned long i = 0; i < step; ++i) {
                     printf("%02X", buf[i]);
+                }
                 printf("\n");
             }
         }
         free(buf);
-
-    } else if (strcmp(cmd, "scanva") == 0) {
-        if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
-        struct va_scan_data req = {0};
-        req.va = strtoul(argv[2], NULL, 16);
-        req.size = strtoul(argv[3], NULL, 10);
-        if (req.size == 0) {
-            fprintf(stderr, "Invalid size for scanva (must be >0).\n");
-            close(fd);
-            return 1;
-        }
-        req.user_buffer = malloc(req.size);
-        if (!req.user_buffer) {
-            perror("malloc for scanva buffer");
-            close(fd);
-            return 1;
-        }
-        if (ioctl(fd, IOCTL_SCAN_VA, &req) < 0) {
-            perror("ioctl IOCTL_SCAN_VA failed");
-        } else {
-            printf("Kernel VA @ 0x%lX:\n", req.va);
-            for (unsigned long i = 0; i < req.size; ++i) {
-                printf("%02X", req.user_buffer[i]);
-                if ((i+1) % 16 == 0) printf(" ");
-            }
-            printf("\n[ASCII]:\n");
-            for (unsigned long i = 0; i < req.size; ++i) {
-                unsigned char c = req.user_buffer[i];
-                printf("%c", (c >= 32 && c <= 126) ? c : '.');
-                if ((i+1) % 16 == 0) printf(" ");
-            }
-            printf("\n");
-        }
-        free(req.user_buffer);
 
     } else if (strcmp(cmd, "scaninstr") == 0) {
         if (argc != 4) { print_usage(argv[0]); close(fd); return 1; }
