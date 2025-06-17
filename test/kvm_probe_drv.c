@@ -17,6 +17,9 @@
 #include <linux/pagemap.h>
 #include <linux/kdev_t.h>
 #include <linux/err.h>
+#include <linux/kallsyms.h>
+#include <linux/static_call.h>
+#include <linux/set_memory.h>
 
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
@@ -88,6 +91,7 @@ struct va_scan_data {
 #define IOCTL_TRIGGER_HYPERCALL 0x1008
 #define IOCTL_READ_KERNEL_MEM   0x1009
 #define IOCTL_WRITE_KERNEL_MEM  0x100A
+#define IOCTL_PATCH_INSTRUCTIONS 0x100B
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("KVM Probe Lab x Uncle Nickypoo x ChatGPT");
@@ -439,6 +443,49 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             return 0;
         }
 
+        // === PATCH INSTRUCTIONS ===
+        case IOCTL_PATCH_INSTRUCTIONS: {
+            struct va_scan_data patch_req;
+            long ret = 0;
+
+            printk(KERN_INFO "%s: IOCTL_PATCH_INSTRUCTIONS called\n", DRIVER_NAME);
+            if (copy_from_user(&patch_req, (struct va_scan_data __user *)arg, sizeof(patch_req))) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
+                return -EFAULT;
+            }
+            if (!patch_req.va || !patch_req.size || !patch_req.user_buffer) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Null argument: va=0x%lx, size=%lu, user_buffer=%px\n",
+                       DRIVER_NAME, patch_req.va, patch_req.size, patch_req.user_buffer);
+                return -EINVAL;
+            }
+            if (patch_req.size > 4096) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Size too big (%lu)\n", DRIVER_NAME, patch_req.size);
+                return -EINVAL;
+            }
+
+            unsigned char *tmp = kmalloc(patch_req.size, GFP_KERNEL);
+            if (!tmp) {
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: kmalloc failed\n", DRIVER_NAME);
+                return -ENOMEM;
+            }
+            if (copy_from_user(tmp, patch_req.user_buffer, patch_req.size)) {
+                kfree(tmp);
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
+                return -EFAULT;
+            }
+
+#ifdef HAVE_PROBE_KERNEL_WRITE
+            ret = probe_kernel_write((void *)patch_req.va, tmp, patch_req.size);
+#else
+    printk(KERN_ERR "%s: probe_kernel_write not available on this kernel\n", DRIVER_NAME);
+    kfree(tmp);
+    return -ENOSYS;
+#endif
+            kfree(tmp);
+            force_hypercall();
+            return 0;
+        }
+
         default:
             printk(KERN_ERR "%s: Unknown IOCTL command: 0x%x\n", DRIVER_NAME, cmd);
             return -EINVAL;
@@ -502,7 +549,3 @@ static void __exit mod_exit(void) {
 
 module_init(mod_init);
 module_exit(mod_exit);
-MODULE_VERSION("1.0");
-MODULE_INFO(vermagic, VERMAGIC_STRING);
-MODULE_INFO(name, kvm_probe_drv);
-MODULE_INFO(srcversion, "1.0.0");
