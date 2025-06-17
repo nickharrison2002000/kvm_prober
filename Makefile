@@ -18,13 +18,12 @@ $(TARGET_MODULE).ko: kvm_probe_drv.c
 $(USER_PROBER): kvm_prober.c
 	@echo "Building User Prober $(USER_PROBER)"
 	$(CC) -Wall -O2 -o $(USER_PROBER) kvm_prober.c
-
 clean:
 	@echo "Cleaning build files..."
-	$(MAKE) -C $(KDIR) M=$(PWD_M) clean > /dev/null 2>&1 || true
-	rm -f $(USER_PROBER) *.o .*.o.cmd .*.ko.cmd *.mod.c *.order *.symvers \\
-	Module.markers modules.builtin modules.builtin.modinfo .tmp_versions/* \\
-	.$(TARGET_MODULE).ko.cmd .$(TARGET_MODULE).mod.o.cmd .$(TARGET_MODULE).o.cmd \\
-	$(TARGET_MODULE).mod $(TARGET_MODULE).mod.o
+	-make -C $(KERNEL_DIR) M=$(PWD) clean > /dev/null 2>&1
+	-rm -f kvm_prober *.o .*.o.cmd .*.ko.cmd *.mod.c *.order *.symvers
+	-rm -f Module.markers modules.builtin modules.builtin.modinfo
+	-rm -rf .tmp_versions
+
 
 .PHONY: all clean modules
