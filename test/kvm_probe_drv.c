@@ -640,5 +640,5 @@ static void __exit driver_exit(void) {
     printk(KERN_INFO "%s: Unloaded successfully\n", DRIVER_NAME);
 }
 
-module_init(driver_init);
-module_exit(driver_exit);
+module_init(kvm_probe_init);
+module_exit(kvm_probe_exit);
