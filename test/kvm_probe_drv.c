@@ -599,7 +599,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
 }
 
 // Module initialization and cleanup
-static int __init driver_init(void) {
+static int __init kvm_probe_init(void) {
     major_num = register_chrdev(0, DRIVER_NAME, &fops);
     if (major_num < 0) {
         printk(KERN_ALERT "%s: Failed to register char device\n", DRIVER_NAME);
@@ -627,7 +627,7 @@ static int __init driver_init(void) {
     return 0;
 }
 
-static void __exit driver_exit(void) {
+static void __exit kvm_probe_exit(void) {
     device_destroy(driver_class, MKDEV(major_num, 0));
     class_unregister(driver_class);
     class_destroy(driver_class);
