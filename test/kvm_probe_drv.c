@@ -529,8 +529,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
         }
 
         case IOCTL_GET_KASLR_SLIDE: {
-            unsigned long text_start = (unsigned long)_stext;
-            unsigned long slide = text_start - 0xffffffff81000000;
+            unsigned long slide = 0; // Initialize slide variable
             if (copy_to_user((unsigned long __user *)arg, &slide, sizeof(slide))) {
                 return -EFAULT;
             }
