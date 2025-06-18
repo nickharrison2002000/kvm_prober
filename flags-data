@@ -1,0 +1,13 @@
+# FLAG ADDRESSES:
+
+Write flag address: ffffffff826279a8    64279a8    0x64279a8
+Read flag address: ffffffff82b5ee10     695ee10    0x695ee10
+
+Write flag address w/ KASLR: 0x026279a8
+Read flag address w/ KASLR: 0x02b5ee10
+
+# GUEST VM RAM REGIONS (from /proc/iomem):
+
+00001000-0009fbff : System RAM
+00100000-7fff9fff : System RAM
+100000000-17fffffff : System RAM
