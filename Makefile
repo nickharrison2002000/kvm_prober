@@ -9,6 +9,13 @@ PWD_M := $(shell pwd)
 
 EXTRA_CFLAGS_MODULE := -Wno-declaration-after-statement -D_GNU_SOURCE -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -Wno-unused-variable
 
+# For newer kernels (5.18+) that require MODULE_IMPORT_NS
+ifneq ($(wildcard $(KDIR)/include/linux/module.h),)
+    ifeq ($(shell grep -c 'MODULE_IMPORT_NS' $(KDIR)/include/linux/module.h),1)
+        EXTRA_CFLAGS_MODULE += -DMODULE_IMPORT_NS
+    endif
+endif
+
 all: $(TARGET_MODULE).ko $(USER_PROBER)
 
 $(TARGET_MODULE).ko: kvm_probe_drv.c
@@ -18,12 +25,19 @@ $(TARGET_MODULE).ko: kvm_probe_drv.c
 $(USER_PROBER): kvm_prober.c
 	@echo "Building User Prober $(USER_PROBER)"
 	$(CC) -Wall -O2 -o $(USER_PROBER) kvm_prober.c
+
 clean:
 	@echo "Cleaning build files..."
-	-make -C $(KERNEL_DIR) M=$(PWD) clean > /dev/null 2>&1
-	-rm -f kvm_prober *.o .*.o.cmd .*.ko.cmd *.mod.c *.order *.symvers
+	-$(MAKE) -C $(KDIR) M=$(PWD_M) clean > /dev/null 2>&1
+	-rm -f $(USER_PROBER) *.o .*.o.cmd .*.ko.cmd *.mod.c *.order *.symvers
 	-rm -f Module.markers modules.builtin modules.builtin.modinfo
 	-rm -rf .tmp_versions
+	-rm -f $(TARGET_MODULE).ko
 
+install: $(TARGET_MODULE).ko
+	sudo insmod $(TARGET_MODULE).ko
 
-.PHONY: all clean modules
+uninstall:
+	sudo rmmod $(TARGET_MODULE) || true
+
+.PHONY: all clean install uninstall
