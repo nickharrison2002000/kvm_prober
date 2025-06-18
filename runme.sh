@@ -85,15 +85,16 @@ echo "[+] Disabled kernel restrictions"
 
 sleep 2
 mkdir /tmp/kvm_probe
-mv Makefile /tmp/kvm_probe
-mv kvm_prober.c /tmp/kvm_probe
-mv kvm_probe_drv.c /tmp/kvm_probe
+cp Makefile /tmp/kvm_probe
+cp kvm_prober.c /tmp/kvm_probe
+cp kvm_probe_drv.c /tmp/kvm_probe
 
 sleep 2
 cd /tmp/kvm_probe
-make
+make clean
+make all
+make install
 cp kvm_prober /usr/bin
-insmod kvm_probe_drv.ko
 kvm_prober allocvqpage
 
 sleep 2
