@@ -1,7 +1,13 @@
 # FLAG ADDRESSES:
 
-Write flag address: ffffffff826279a8    64279a8    0x64279a8
-Read flag address: ffffffff82b5ee10     695ee10    0x695ee10
+Write flag address: ffffffff826279a8    0x64279a8
+Read flag address: ffffffff82b5ee10     0x695ee10
+
+on the guest system 
+
+ffffffff826279a8 = 0x026279a8
+ffffffff82b5ee10 = 0x02b5ee10 
+
 
 Write flag address w/ KASLR: 0x026279a8
 Read flag address w/ KASLR: 0x02b5ee10
