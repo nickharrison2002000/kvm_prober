@@ -52,11 +52,11 @@ apt-get --fix-missing install
 ### ===Install with verification===
 sleep 2
 echo "[*] Installing common headers"
-dpkg -i "linux-headers-${KERN_VER%-*}-common_6.1.90-1_all.deb" || true
+dpkg -i "linux-*common*.deb" || true
 
 sleep 2
 echo "[*] Installing architecture-specific headers"
-dpkg -i "linux-headers-${KERN_VER%-*}_6.1.90-1_amd64.deb" || true
+dpkg -i "linux-*amd64.deb" || true
 
 sleep 2
 apt-get install linux-headers-6.1.0-21-common linux-image-${KERN_VER%-*} -y
