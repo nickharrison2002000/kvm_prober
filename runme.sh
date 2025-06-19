@@ -224,3 +224,7 @@ echo "triggering the exploit now"
 # Trigger the exploit
 echo "/bin/bash -c "echo Triggering exploit""
 /bin/bash -c "echo Triggering exploit"
+
+echo "running next exploit"
+python3 kvmdescriptor.py
+
