@@ -102,12 +102,24 @@ cd /root
 echo "fetching host modprobe path..."
 nm ./vmlinux | grep modprobe_path
 
+# FLAG ADDRESSES:
+
+Write flag address:     
+Read flag address:      
+
+on the guest system 
+
+ffffffff826279a8 = 
+ffffffff82b5ee10 = 
 sleep 2
 echo "host Addresses to scan WITH KASLR
-Write flag VA: 0xffffffff8304f080
-Phys: 0x824f080
-Read flag VA: 0xffffffff83a58ae8
-Phys: 0x8c58ae8"
+Write flag VA: ffffffff826279a8
+Phys: 0x64279a8
+Read flag VA: ffffffff82b5ee10
+Phys: 0x695ee10
+write without kaslr: 0x026279a8
+read without kaslr: 0x02b5ee10"
+
 
 sleep 2
 echo "compiling hypercall..."
