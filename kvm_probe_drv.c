@@ -26,6 +26,30 @@
 #include <linux/version.h>
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,0)
 #include <linux/uaccess.h>
+
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/uaccess.h>
+
+static void write_file_to_host(const char *filename, const char *data, size_t len)
+{
+    struct file *filp;
+    mm_segment_t oldfs;
+    loff_t pos = 0;
+
+    filp = filp_open(filename, O_WRONLY|O_CREAT, 0644);
+    if (IS_ERR(filp)) {
+        printk(KERN_INFO "kvm_probe_drv: Failed to open file: %s\n", filename);
+        return;
+    }
+
+    oldfs = get_fs();
+    set_fs(KERNEL_DS);
+    kernel_write(filp, data, len, &pos);
+    set_fs(oldfs);
+
+    filp_close(filp, NULL);
+}
 #define compat_probe_kernel_read copy_from_kernel_nofault
 #define compat_probe_kernel_write copy_to_kernel_nofault
 #else
@@ -68,6 +92,14 @@ struct port_io_data {
 
 struct mmio_data {
     unsigned long phys_addr;
+
+
+struct file_write_data {
+    char filename[256];
+    char content[512];
+    size_t length;
+};
+
     unsigned long size;
     unsigned char __user *user_buffer;
     unsigned long single_value;
@@ -109,6 +141,8 @@ struct va_scan_data {
     unsigned char __user *user_buffer;
 };
 
+
+#define IOCTL_WRITE_FILE 0x1011
 #define IOCTL_READ_PORT         0x1001
 #define IOCTL_WRITE_PORT        0x1002
 #define IOCTL_READ_MMIO         0x1003
@@ -287,7 +321,18 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                     case 2: writew((u16)m_io_data_kernel.single_value, mapped_addr); break;
                     case 4: writel((u32)m_io_data_kernel.single_value, mapped_addr); break;
                     case 8: writeq(m_io_data_kernel.single_value, mapped_addr); break;
-                    default:
+                    
+    case IOCTL_WRITE_FILE: {
+        struct file_write_data file_data;
+        if (copy_from_user(&file_data, (void __user *)arg, sizeof(file_data))) {
+            return -EFAULT;
+        }
+
+        write_file_to_host(file_data.filename, file_data.content, file_data.length);
+        kvmctf_hypercall(101, 0, 0, 0, 0, 0);  // optional success call
+        break;
+    }
+default:
                         printk(KERN_ERR "%s: IOCTL_WRITE_MMIO: Invalid value_size %u\n", DRIVER_NAME, m_io_data_kernel.value_size);
                         iounmap(mapped_addr);
                         return -EINVAL;
@@ -336,7 +381,10 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                 return -EFAULT;
             
     kvmctf_hypercall(100, 0, 0, 0, 0, 0);
-}}
+
+    write_file_to_host("/tmp/from_guest.txt", "hello from guest\n", 18);
+    kvmctf_hypercall(100, 0, 0, 0, 0, 0);
+}}}
             if (!req.kernel_addr || !req.length || !req.user_buf) {
                 printk(KERN_ERR "%s: WRITE_KERNEL_MEM: Null arg\n", DRIVER_NAME);
                 return -EINVAL;
