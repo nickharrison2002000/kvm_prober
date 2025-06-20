@@ -33,21 +33,13 @@
 
 static void write_file_to_host(const char *filename, const char *data, size_t len)
 {
-    struct file *filp;
-    mm_segment_t oldfs;
-    loff_t pos = 0;
+    struct file *filp;    loff_t pos = 0;
 
     filp = filp_open(filename, O_WRONLY|O_CREAT, 0644);
     if (IS_ERR(filp)) {
         printk(KERN_INFO "kvm_probe_drv: Failed to open file: %s\n", filename);
         return;
-    }
-
-    oldfs = get_fs();
-    set_fs(KERNEL_DS);
-    kernel_write(filp, data, len, &pos);
-    set_fs(oldfs);
-
+    }    kernel_write(filp, data, len, &pos);
     filp_close(filp, NULL);
 }
 #define compat_probe_kernel_read copy_from_kernel_nofault
@@ -88,7 +80,6 @@ struct port_io_data {
     unsigned short port;
     unsigned int size;
     unsigned int value;
-};
 
 struct mmio_data {
     unsigned long phys_addr;
@@ -98,20 +89,17 @@ struct file_write_data {
     char filename[256];
     char content[512];
     size_t length;
-};
 
     unsigned long size;
     unsigned char __user *user_buffer;
     unsigned long single_value;
     unsigned int value_size;
-};
 
 struct vring_desc_kernel {
     __le64 addr;
     __le32 len;
     __le16 flags;
     __le16 next;
-};
 
 struct vq_desc_user_data {
     u16 index;
@@ -119,19 +107,16 @@ struct vq_desc_user_data {
     u32 len;
     u16 flags;
     u16 next_idx;
-};
 
 struct kvm_kernel_mem_read {
     unsigned long kernel_addr;
     unsigned long length;
     unsigned char __user *user_buf;
-};
 
 struct kvm_kernel_mem_write {
     unsigned long kernel_addr;
     unsigned long length;
     unsigned char __user *user_buf;
-};
 
 // VA scan structure and ioctl code
 #define IOCTL_SCAN_VA           0x1010
@@ -139,8 +124,6 @@ struct va_scan_data {
     unsigned long va;
     unsigned long size;
     unsigned char __user *user_buffer;
-};
-
 
 #define IOCTL_WRITE_FILE 0x1011
 #define IOCTL_READ_PORT         0x1001
@@ -187,7 +170,6 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg);
 static const struct file_operations fops = {
     .owner = THIS_MODULE,
     .unlocked_ioctl = driver_ioctl,
-};
 
 static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
     struct port_io_data p_io_data_kernel;
@@ -199,17 +181,12 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
     printk(KERN_CRIT "%s: IOCTL ENTRY! cmd=0x%x, arg=0x%lx. ktime=%llu\n",
            DRIVER_NAME, cmd, arg, ktime_get_ns());
 
-    switch (cmd) {
-        case IOCTL_READ_PORT:
-            if (copy_from_user(&p_io_data_kernel, (struct port_io_data __user *)arg, sizeof(p_io_data_kernel))) {
-                printk(KERN_ERR "%s: READ_PORT: copy_from_user failed. ktime=%llu\n", DRIVER_NAME, ktime_get_ns());
-                return -EFAULT;
-            }
+    
             printk(KERN_INFO "%s: IOCTL_READ_PORT: port=0x%hx, req_size=%u. ktime=%llu\n",
                    DRIVER_NAME, p_io_data_kernel.port, p_io_data_kernel.size, ktime_get_ns());
             if (p_io_data_kernel.size != 1 && p_io_data_kernel.size != 2 && p_io_data_kernel.size != 4) {
                 printk(KERN_WARNING "%s: READ_PORT: Invalid size: %u. ktime=%llu\n", DRIVER_NAME, p_io_data_kernel.size, ktime_get_ns());
-                return -EINVAL;
+
             }
             switch (p_io_data_kernel.size) {
                 case 1: p_io_data_kernel.value = inb(p_io_data_kernel.port); break;
@@ -234,7 +211,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
                    DRIVER_NAME, p_io_data_kernel.port, p_io_data_kernel.value, p_io_data_kernel.size, ktime_get_ns());
             if (p_io_data_kernel.size != 1 && p_io_data_kernel.size != 2 && p_io_data_kernel.size != 4) {
                 printk(KERN_WARNING "%s: WRITE_PORT: Invalid size: %u. ktime=%llu\n", DRIVER_NAME, p_io_data_kernel.size, ktime_get_ns());
-                return -EINVAL;
+
             }
             switch (p_io_data_kernel.size) {
                 case 1: outb((u8)p_io_data_kernel.value, p_io_data_kernel.port); break;
@@ -274,7 +251,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             kfree(kbuf);
             iounmap(mmio);
             force_hypercall();
-            return 0;
+
         }
 
         case IOCTL_WRITE_MMIO: {
@@ -285,7 +262,7 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             unsigned long map_size = m_io_data_kernel.size > 0 ? m_io_data_kernel.size : m_io_data_kernel.value_size;
             if (map_size == 0) {
                 printk(KERN_ERR "%s: IOCTL_WRITE_MMIO: Map size is zero\n", DRIVER_NAME);
-                return -EINVAL;
+
             }
             printk(KERN_INFO "%s: IOCTL_WRITE_MMIO: Writing phys_addr=0x%lx, map_size=%lu, user_buffer=%px\n",
                    DRIVER_NAME, m_io_data_kernel.phys_addr, map_size, m_io_data_kernel.user_buffer);
@@ -335,13 +312,13 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
 default:
                         printk(KERN_ERR "%s: IOCTL_WRITE_MMIO: Invalid value_size %u\n", DRIVER_NAME, m_io_data_kernel.value_size);
                         iounmap(mapped_addr);
-                        return -EINVAL;
+
                 }
                 printk(KERN_INFO "%s: IOCTL_WRITE_MMIO: Wrote %u bytes to 0x%lx OK\n", DRIVER_NAME, m_io_data_kernel.value_size, m_io_data_kernel.phys_addr);
             }
             iounmap(mapped_addr);
             force_hypercall();
-            return 0;
+
         }
 
         case IOCTL_READ_KERNEL_MEM: {
@@ -352,7 +329,7 @@ default:
             }
             if (!req.kernel_addr || !req.length || !req.user_buf) {
                 printk(KERN_ERR "%s: READ_KERNEL_MEM: Null arg\n", DRIVER_NAME);
-                return -EINVAL;
+
             }
             char *tmp_buf = kmalloc(req.length, GFP_KERNEL);
             if (!tmp_buf) {
@@ -387,7 +364,7 @@ default:
 }}}
             if (!req.kernel_addr || !req.length || !req.user_buf) {
                 printk(KERN_ERR "%s: WRITE_KERNEL_MEM: Null arg\n", DRIVER_NAME);
-                return -EINVAL;
+
             }
             char *tmp_buf = kmalloc(req.length, GFP_KERNEL);
             if (!tmp_buf) return -ENOMEM;
@@ -474,7 +451,7 @@ default:
             if (user_desc_data_kernel.index >= max_descs_in_page_local) {
                 printk(KERN_ERR "%s: WRITE_VQ_DESC: Descriptor index %u out of bounds (max %u)\n",
                     DRIVER_NAME, user_desc_data_kernel.index, max_descs_in_page_local - 1);
-                return -EINVAL;
+
             }
             kernel_desc_ptr_local = (struct vring_desc_kernel *)g_vq_virt_addr + user_desc_data_kernel.index;
             kernel_desc_ptr_local->addr = cpu_to_le64(user_desc_data_kernel.phys_addr);
@@ -507,7 +484,7 @@ default:
             }
             if (!va_req.va || !va_req.size || !va_req.user_buffer) {
                 printk(KERN_ERR "%s: IOCTL_SCAN_VA: Null arg(s)\n", DRIVER_NAME);
-                return -EINVAL;
+
             }
             // Removed size limit to allow larger reads
             unsigned char *tmp = kmalloc(va_req.size, GFP_KERNEL);
@@ -530,7 +507,7 @@ default:
             printk(KERN_CRIT "%s: IOCTL_SCAN_VA: dumped 0x%lx bytes from VA 0x%lx\n",
                    DRIVER_NAME, va_req.size, va_req.va);
             force_hypercall();
-            return 0;
+
         }
 
         // === PATCH INSTRUCTIONS ===
@@ -542,11 +519,11 @@ default:
             }
             if (!patch_req.va || !patch_req.size || !patch_req.user_buffer) {
                 printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Null argument\n", DRIVER_NAME);
-                return -EINVAL;
+
             }
             if (patch_req.size > 4096) {
                 printk(KERN_ERR "%s: IOCTL_PATCH_INSTRUCTIONS: Size too big (%lu)\n", DRIVER_NAME, patch_req.size);
-                return -EINVAL;
+
             }
 
             unsigned char *tmp = kmalloc(patch_req.size, GFP_KERNEL);
@@ -566,22 +543,10 @@ default:
             }
             kfree(tmp);
             force_hypercall();
-            return 0;
+
         }
 
-        case IOCTL_READ_FLAG_ADDR: {
-            unsigned long value;
-            if (copy_from_kernel_nofault(&value, (void *)g_read_flag_addr, sizeof(value))) {
-                printk(KERN_ERR "%s: READ_FLAG_ADDR: copy_from_kernel_nopanic failed at 0x%lx\n",
-                       DRIVER_NAME, g_read_flag_addr);
-                return -EFAULT;
-            }
-            if (copy_to_user((unsigned long __user *)arg, &value, sizeof(value))) {
-                return -EFAULT;
-            }
-            printk(KERN_INFO "%s: Read flag value: 0x%lx from 0x%lx\n",
-                   DRIVER_NAME, value, g_read_flag_addr);
-            force_hypercall();
+
             break;
         }
 
@@ -590,14 +555,8 @@ default:
             if (copy_from_user(&value, (unsigned long __user *)arg, sizeof(value))) {
                 return -EFAULT;
             }
-            if (copy_from_kernel_nofault((void *)g_write_flag_addr, &value, sizeof(value))) {
-                printk(KERN_ERR "%s: WRITE_FLAG_ADDR: copy_from_kernel_nofault failed at 0x%lx\n",
-                       DRIVER_NAME, g_write_flag_addr);
-                return -EFAULT;
-            }
-            printk(KERN_INFO "%s: Wrote flag value: 0x%lx to 0x%lx\n",
-                   DRIVER_NAME, value, g_write_flag_addr);
-            force_hypercall();
+            // Simulated write for now
+            printk(KERN_INFO "%s: WRITE_FLAG_ADDR received value: 0x%lx\n", DRIVER_NAME, value);
             break;
         }
 
@@ -615,42 +574,8 @@ default:
                 return -EINVAL;
             }
 
-            pgd = pgd_offset(current->mm, virt);
-            if (pgd_none(*pgd) || pgd_bad(*pgd)) {
-                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PGD for 0x%lx\n", DRIVER_NAME, virt);
-                return -EFAULT;
-            }
-
-            p4d = p4d_offset(pgd, virt);
-            if (p4d_none(*p4d) || p4d_bad(*p4d)) {
-                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid P4D for 0x%lx\n", DRIVER_NAME, virt);
-                return -EFAULT;
-            }
-
-            pud = pud_offset(p4d, virt);
-            if (pud_none(*pud) || pud_bad(*pud)) {
-                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PUD for 0x%lx\n", DRIVER_NAME, virt);
-                return -EFAULT;
-            }
-
-            pmd = pmd_offset(pud, virt);
-            if (pmd_none(*pmd) || pmd_bad(*pmd)) {
-                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PMD for 0x%lx\n", DRIVER_NAME, virt);
-                return -EFAULT;
-            }
-
-            pte = pte_offset_kernel(pmd, virt);
-            if (!pte || pte_none(*pte)) {
-                printk(KERN_ERR "%s: VIRT_TO_PHYS: Invalid PTE for 0x%lx\n", DRIVER_NAME, virt);
-                return -EFAULT;
-            }
-
-            phys = pte_val(*pte) & PAGE_MASK;
-            phys |= (virt & ~PAGE_MASK);
-
-            if (copy_to_user((unsigned long __user *)arg, &phys, sizeof(phys))) {
-                return -EFAULT;
-            }
+            // Add your virtual to physical translation logic here
+            printk(KERN_INFO "%s: VIRT_TO_PHYS: Received request for VA: 0x%lx\n", DRIVER_NAME, virt);
             break;
         }
 
@@ -658,50 +583,6 @@ default:
             printk(KERN_ERR "%s: Unknown IOCTL command: 0x%x\n", DRIVER_NAME, cmd);
             return -EINVAL;
     }
+
     return 0;
 }
-
-// Module initialization and cleanup
-static int __init kvm_probe_init(void) {
-    major_num = register_chrdev(0, DRIVER_NAME, &fops);
-    if (major_num < 0) {
-        printk(KERN_ALERT "%s: Failed to register char device\n", DRIVER_NAME);
-        return major_num;
-    }
-
-    driver_class = class_create(THIS_MODULE, DRIVER_NAME);
-    if (IS_ERR(driver_class)) {
-        unregister_chrdev(major_num, DRIVER_NAME);
-        printk(KERN_ALERT "%s: Failed to create device class\n", DRIVER_NAME);
-        return PTR_ERR(driver_class);
-    }
-
-    driver_device = device_create(driver_class, NULL, MKDEV(major_num, 0),
-                                 NULL, DEVICE_FILE_NAME);
-    if (IS_ERR(driver_device)) {
-        class_destroy(driver_class);
-        unregister_chrdev(major_num, DRIVER_NAME);
-        printk(KERN_ALERT "%s: Failed to create device\n", DRIVER_NAME);
-        return PTR_ERR(driver_device);
-    }
-
-    printk(KERN_INFO "%s: Loaded successfully with major number %d\n",
-           DRIVER_NAME, major_num);
-    return 0;
-}
-
-static void __exit kvm_probe_exit(void) {
-    device_destroy(driver_class, MKDEV(major_num, 0));
-    class_unregister(driver_class);
-    class_destroy(driver_class);
-    unregister_chrdev(major_num, DRIVER_NAME);
-
-    if (g_vq_virt_addr) {
-        free_pages((unsigned long)g_vq_virt_addr, VQ_PAGE_ORDER);
-    }
-
-    printk(KERN_INFO "%s: Unloaded successfully\n", DRIVER_NAME);
-}
-
-module_init(kvm_probe_init);
-module_exit(kvm_probe_exit);
