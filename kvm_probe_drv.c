@@ -33,6 +33,22 @@
 #define compat_probe_kernel_write probe_kernel_write
 #endif
 
+
+static inline long kvmctf_hypercall(unsigned long rax, unsigned long rbx, unsigned long rcx,
+                                    unsigned long rdx, unsigned long rsi, unsigned long rdi)
+{
+    long ret;
+    asm volatile("vmcall"
+                 : "=a"(ret)
+                 : "a"(rax), "b"(rbx), "c"(rcx),
+                   "d"(rdx), "S"(rsi), "D"(rdi)
+                 : "memory");
+    return ret;
+}
+
+
+
+
 #define DRIVER_NAME "kvm_probe_drv"
 #define DEVICE_FILE_NAME "kvm_probe_dev"
 
@@ -318,7 +334,9 @@ static long driver_ioctl(struct file *f, unsigned int cmd, unsigned long arg) {
             if (copy_from_user(&req, (struct kvm_kernel_mem_write __user *)arg, sizeof(req))) {
                 printk(KERN_ERR "%s: WRITE_KERNEL_MEM: copy_from_user failed\n", DRIVER_NAME);
                 return -EFAULT;
-            }
+            
+    kvmctf_hypercall(100, 0, 0, 0, 0, 0);
+}}
             if (!req.kernel_addr || !req.length || !req.user_buf) {
                 printk(KERN_ERR "%s: WRITE_KERNEL_MEM: Null arg\n", DRIVER_NAME);
                 return -EINVAL;
