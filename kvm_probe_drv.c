@@ -586,3 +586,42 @@ default:
 
     return 0;
 }
+
+
+        case IOCTL_READ_FLAG_ADDR: {
+            unsigned long value;
+            if (copy_from_kernel_nofault(&value, (void *)g_read_flag_addr, sizeof(value))) {
+                printk(KERN_ERR "%s: READ_FLAG_ADDR: copy_from_kernel_nopanic failed at 0x%lx\n",
+                       DRIVER_NAME, g_read_flag_addr);
+                return -EFAULT;
+            }
+            printk(KERN_INFO "%s: READ_FLAG_ADDR: value = 0x%lx\n", DRIVER_NAME, value);
+            break;
+        }
+
+        case IOCTL_WRITE_FLAG_ADDR: {
+            unsigned long value;
+            if (copy_from_user(&value, (unsigned long __user *)arg, sizeof(value))) {
+                return -EFAULT;
+            }
+            printk(KERN_INFO "%s: WRITE_FLAG_ADDR received value: 0x%lx\n", DRIVER_NAME, value);
+            break;
+        }
+
+        case IOCTL_VIRT_TO_PHYS: {
+            unsigned long virt = arg;
+            if (!virt) {
+                printk(KERN_ERR "%s: VIRT_TO_PHYS: NULL address\n", DRIVER_NAME);
+                return -EINVAL;
+            }
+            printk(KERN_INFO "%s: VIRT_TO_PHYS: Requested VA: 0x%lx\n", DRIVER_NAME, virt);
+            break;
+        }
+
+        default:
+            printk(KERN_ERR "%s: Unknown IOCTL command: 0x%x\n", DRIVER_NAME, cmd);
+            return -EINVAL;
+    }
+
+    return 0;
+}
