@@ -18,6 +18,14 @@ struct port_io_data {
 
 struct mmio_data {
     unsigned long phys_addr;
+
+
+struct file_write_data {
+    char filename[256];
+    char content[512];
+    size_t length;
+};
+
     unsigned long size;
     unsigned char *user_buffer;
     unsigned long single_value;
@@ -53,6 +61,7 @@ struct va_scan_data {
 };
 
 // IOCTL commands (updated to match kernel module)
+#define IOCTL_WRITE_FILE        0x1011
 #define IOCTL_READ_PORT         0x1001
 #define IOCTL_WRITE_PORT        0x1002
 #define IOCTL_READ_MMIO         0x1003
@@ -137,7 +146,25 @@ unsigned long get_symbol_address(const char *symbol_name) {
     return addr;
 }
 
+
+void write_host_file(int fd, const char *path, const char *content) {
+    struct file_write_data data;
+    memset(&data, 0, sizeof(data));
+    strncpy(data.filename, path, sizeof(data.filename) - 1);
+    strncpy(data.content, content, sizeof(data.content) - 1);
+    data.length = strlen(data.content);
+
+    if (ioctl(fd, IOCTL_WRITE_FILE, &data) < 0) {
+        perror("IOCTL_WRITE_FILE failed");
+    } else {
+        printf("File '%s' written to host successfully.\n", path);
+    }
+}
+
+
 int main(int argc, char *argv[]) {
+    write_host_file(fd, "/tmp/guest_written.txt", "guest says hello from userland!");
+
     if (argc < 2) {
         print_usage(argv[0]);
         return 1;
